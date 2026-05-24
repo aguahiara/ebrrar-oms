@@ -1,5 +1,5 @@
 import { parseAvonExcel } from "@/lib/avon-excel";
-import { fetchAvonMenuItems } from "@/lib/avon-menu";
+import { fetchAvonAliases, fetchAvonMenuItems } from "@/lib/avon-menu";
 import {
   buildMatchSummary,
   persistAvonUpload,
@@ -34,9 +34,12 @@ export async function POST(request: Request) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const orders = parseAvonExcel(buffer);
-    const menuItems = await fetchAvonMenuItems();
-    const resolved = resolveAvonOrders(orders, menuItems);
-    const { linesInserted } = await persistAvonUpload({
+    const [menuItems, aliases] = await Promise.all([
+      fetchAvonMenuItems(),
+      fetchAvonAliases(),
+    ]);
+    const resolved = await resolveAvonOrders(orders, menuItems, aliases);
+    const { linesInserted, exceptionsInserted } = await persistAvonUpload({
       serviceDay,
       sourceFilename: file.name,
       orders: resolved,
@@ -46,6 +49,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ...summary,
       linesInserted,
+      exceptionsInserted,
     });
   } catch (err) {
     const message =

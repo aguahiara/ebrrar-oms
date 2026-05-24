@@ -1,6 +1,7 @@
 import type { AvonDayOfWeek, AvonOrderRecord } from "@/lib/avon-excel";
 import type { AvonMenuItem } from "@/lib/avon-menu";
 import { addCalendarDays } from "@/lib/calendar-date";
+import { matchMeal, type MenuItemAliasForMatch } from "@/lib/matchMeal";
 import { supabase } from "@/lib/supabase";
 
 const AVON_CUSTOMER_NAME = "AVON";
@@ -15,37 +16,44 @@ const WEEKDAY_OFFSET: Record<AvonDayOfWeek, number> = {
 
 export type ResolvedAvonOrder = AvonOrderRecord & {
   menuItemId: string | null;
-  matchType: "Direct" | null;
+  matchType: "Direct" | "Alias" | "Fuzzy" | null;
+  // Populated only for Fuzzy matches (the similarity score that cleared the threshold).
+  matchScore: number | null;
+  // Populated only when unmatched: the best fuzzy guess + score, surfaced on the exception.
+  bestGuessId: string | null;
+  bestScore: number | null;
 };
 
 export type AvonMatchSummary = {
   totalOrders: number;
-  matchedDirectly: number;
-  unmatched: {
+  matchedDirect: number;
+  matchedAlias: number;
+  matchedFuzzy: number;
+  exceptions: {
     employeeName: string;
     dayOfWeek: AvonDayOfWeek;
     rawMealText: string;
+    bestScore: number | null;
   }[];
 };
 
 export function buildMatchSummary(orders: ResolvedAvonOrder[]): AvonMatchSummary {
-  const unmatched = orders
+  const exceptions = orders
     .filter((order) => order.matchType === null)
-    .map(({ employeeName, dayOfWeek, rawMealText }) => ({
+    .map(({ employeeName, dayOfWeek, rawMealText, bestScore }) => ({
       employeeName,
       dayOfWeek,
       rawMealText,
+      bestScore,
     }));
 
   return {
     totalOrders: orders.length,
-    matchedDirectly: orders.length - unmatched.length,
-    unmatched,
+    matchedDirect: orders.filter((order) => order.matchType === "Direct").length,
+    matchedAlias: orders.filter((order) => order.matchType === "Alias").length,
+    matchedFuzzy: orders.filter((order) => order.matchType === "Fuzzy").length,
+    exceptions,
   };
-}
-
-function normalizeMealText(value: string): string {
-  return value.trim().toLowerCase();
 }
 
 export function lineServiceDay(
@@ -55,24 +63,44 @@ export function lineServiceDay(
   return addCalendarDays(weekStart, WEEKDAY_OFFSET[dayOfWeek]);
 }
 
-export function resolveAvonOrders(
+/**
+ * Run the FRD 8.4 three-step reconciliation (Direct -> Alias -> Fuzzy) for every
+ * parsed order. menuItems are filtered to the order's day before matching;
+ * matchMeal restricts aliases to that day's item ids internally.
+ */
+export async function resolveAvonOrders(
   orders: AvonOrderRecord[],
   menuItems: AvonMenuItem[],
-): ResolvedAvonOrder[] {
-  return orders.map((order) => {
-    const normalizedMeal = normalizeMealText(order.rawMealText);
-    const match = menuItems.find(
-      (item) =>
-        item.day_of_week === order.dayOfWeek &&
-        normalizeMealText(item.canonical_name) === normalizedMeal,
-    );
+  aliases: MenuItemAliasForMatch[],
+): Promise<ResolvedAvonOrder[]> {
+  return Promise.all(
+    orders.map(async (order) => {
+      const dayItems = menuItems.filter(
+        (item) => item.day_of_week === order.dayOfWeek,
+      );
+      const result = await matchMeal(order.rawMealText, dayItems, aliases);
 
-    return {
-      ...order,
-      menuItemId: match?.id ?? null,
-      matchType: match ? "Direct" : null,
-    };
-  });
+      if (result.matchType !== null) {
+        return {
+          ...order,
+          menuItemId: result.itemId,
+          matchType: result.matchType,
+          matchScore: result.matchType === "Fuzzy" ? result.score : null,
+          bestGuessId: null,
+          bestScore: null,
+        };
+      }
+
+      return {
+        ...order,
+        menuItemId: null,
+        matchType: null,
+        matchScore: null,
+        bestGuessId: result.bestGuessId,
+        bestScore: result.bestScore,
+      };
+    }),
+  );
 }
 
 async function fetchAvonCustomerId(): Promise<string> {
@@ -89,11 +117,16 @@ async function fetchAvonCustomerId(): Promise<string> {
   return data.id;
 }
 
+/**
+ * Persist a parsed batch. Matched orders (Direct/Alias/Fuzzy) become order_line rows;
+ * unmatched orders become Open order_exception rows so nothing silently enters the
+ * production count (FRD 5.9).
+ */
 export async function persistAvonUpload(params: {
   serviceDay: string;
   sourceFilename: string;
   orders: ResolvedAvonOrder[];
-}): Promise<{ batchId: string; linesInserted: number }> {
+}): Promise<{ batchId: string; linesInserted: number; exceptionsInserted: number }> {
   const customerId = await fetchAvonCustomerId();
 
   const { data: batch, error: batchError } = await supabase
@@ -112,32 +145,61 @@ export async function persistAvonUpload(params: {
     );
   }
 
-  if (params.orders.length === 0) {
-    return { batchId: batch.id, linesInserted: 0 };
+  const matched = params.orders.filter((order) => order.matchType !== null);
+  const unmatched = params.orders.filter((order) => order.matchType === null);
+
+  let linesInserted = 0;
+  if (matched.length > 0) {
+    const lines = matched.map((order) => ({
+      order_batch_id: batch.id,
+      customer_id: customerId,
+      service_day: lineServiceDay(params.serviceDay, order.dayOfWeek),
+      menu_item_id: order.menuItemId,
+      meal_name_raw: order.rawMealText,
+      employee_ref: order.employeeName,
+      quantity: 1,
+      match_type: order.matchType,
+    }));
+
+    const { data: inserted, error: linesError } = await supabase
+      .from("order_line")
+      .insert(lines)
+      .select("id");
+
+    if (linesError) {
+      throw new Error(`Failed to insert order lines: ${linesError.message}`);
+    }
+
+    linesInserted = inserted?.length ?? 0;
   }
 
-  const lines = params.orders.map((order) => ({
-    order_batch_id: batch.id,
-    customer_id: customerId,
-    service_day: lineServiceDay(params.serviceDay, order.dayOfWeek),
-    menu_item_id: order.menuItemId,
-    meal_name_raw: order.rawMealText,
-    employee_ref: order.employeeName,
-    quantity: 1,
-    match_type: order.matchType,
-  }));
+  let exceptionsInserted = 0;
+  if (unmatched.length > 0) {
+    const exceptions = unmatched.map((order) => ({
+      order_batch_id: batch.id,
+      customer_id: customerId,
+      service_day: lineServiceDay(params.serviceDay, order.dayOfWeek),
+      raw_value: order.rawMealText,
+      employee_ref: order.employeeName,
+      exception_type: "Meal not on menu",
+      suggested_item_id: order.bestGuessId,
+      suggested_score: order.bestScore,
+      status: "Open",
+    }));
 
-  const { data: inserted, error: linesError } = await supabase
-    .from("order_line")
-    .insert(lines)
-    .select("id");
+    const { data: insertedExceptions, error: exceptionError } = await supabase
+      .from("order_exception")
+      .insert(exceptions)
+      .select("id");
 
-  if (linesError) {
-    throw new Error(`Failed to insert order lines: ${linesError.message}`);
+    if (exceptionError) {
+      throw new Error(
+        `Failed to insert order exceptions: ${exceptionError.message}`,
+      );
+    }
+
+    exceptionsInserted = insertedExceptions?.length ?? 0;
   }
 
-  return {
-    batchId: batch.id,
-    linesInserted: inserted?.length ?? 0,
-  };
+  return { batchId: batch.id, linesInserted, exceptionsInserted };
 }
