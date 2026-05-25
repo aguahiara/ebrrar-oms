@@ -1,12 +1,7 @@
+import type { DayOfWeek, OrderRecord } from "@/lib/order-types";
 import * as XLSX from "xlsx";
 
-export type AvonDayOfWeek = "Mon" | "Tue" | "Wed" | "Thu" | "Fri";
-
-export type AvonOrderRecord = {
-  employeeName: string;
-  dayOfWeek: AvonDayOfWeek;
-  rawMealText: string;
-};
+export type { DayOfWeek, OrderRecord } from "@/lib/order-types";
 
 const EXPECTED_HEADERS = [
   "Name",
@@ -18,7 +13,7 @@ const EXPECTED_HEADERS = [
   "Location",
 ] as const;
 
-const WEEKDAY_COLUMNS: { header: string; day: AvonDayOfWeek }[] = [
+const WEEKDAY_COLUMNS: { header: string; day: DayOfWeek }[] = [
   { header: "Monday", day: "Mon" },
   { header: "Tuesday", day: "Tue" },
   { header: "Wednesday", day: "Wed" },
@@ -34,7 +29,7 @@ function cellText(value: unknown): string {
   return String(value ?? "").trim();
 }
 
-export function parseAvonExcel(buffer: Buffer): AvonOrderRecord[] {
+export function parseAvonExcel(buffer: Buffer): OrderRecord[] {
   const workbook = XLSX.read(buffer, { type: "buffer" });
   const sheetName = workbook.SheetNames[0];
 
@@ -71,7 +66,7 @@ export function parseAvonExcel(buffer: Buffer): AvonOrderRecord[] {
     index: headerIndex.get(header.toLowerCase())!,
   }));
 
-  const records: AvonOrderRecord[] = [];
+  const records: OrderRecord[] = [];
 
   for (const row of rows.slice(1)) {
     const employeeName = cellText(row[nameIndex]);

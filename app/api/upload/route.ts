@@ -1,11 +1,11 @@
-import { parseAvonExcel } from "@/lib/avon-excel";
-import { fetchAvonAliases, fetchAvonMenuItems } from "@/lib/avon-menu";
+import { fetchAliases, fetchMenuItems } from "@/lib/avon-menu";
 import {
   buildMatchSummary,
-  persistAvonUpload,
-  resolveAvonOrders,
+  persistUpload,
+  resolveOrders,
 } from "@/lib/avon-orders";
 import { isCalendarDate } from "@/lib/calendar-date";
+import { getParser } from "@/lib/parsers";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
@@ -13,6 +13,11 @@ export async function POST(request: Request) {
     const formData = await request.formData();
     const file = formData.get("file");
     const serviceDay = formData.get("serviceDay");
+    const customerField = formData.get("customer");
+    const customer =
+      typeof customerField === "string" && customerField.trim() !== ""
+        ? customerField.trim()
+        : "AVON";
 
     if (!(file instanceof File)) {
       return NextResponse.json({ error: "No file provided." }, { status: 400 });
@@ -33,13 +38,15 @@ export async function POST(request: Request) {
     }
 
     const buffer = Buffer.from(await file.arrayBuffer());
-    const orders = parseAvonExcel(buffer);
+    const parse = getParser(customer);
+    const orders = parse(buffer);
     const [menuItems, aliases] = await Promise.all([
-      fetchAvonMenuItems(),
-      fetchAvonAliases(),
+      fetchMenuItems(customer),
+      fetchAliases(customer),
     ]);
-    const resolved = await resolveAvonOrders(orders, menuItems, aliases);
-    const { linesInserted, exceptionsInserted } = await persistAvonUpload({
+    const resolved = await resolveOrders(orders, menuItems, aliases);
+    const { linesInserted, exceptionsInserted } = await persistUpload({
+      customerDisplayName: customer,
       serviceDay,
       sourceFilename: file.name,
       orders: resolved,
@@ -58,7 +65,8 @@ export async function POST(request: Request) {
     const status = message.includes("Missing required column") ||
       message.includes("Workbook has no sheets") ||
       message.includes("Sheet is empty") ||
-      message.includes("service day")
+      message.includes("service day") ||
+      message.includes("No upload parser registered")
       ? 400
       : 500;
 

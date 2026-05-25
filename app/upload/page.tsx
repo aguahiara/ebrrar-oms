@@ -5,12 +5,16 @@ import { useState } from "react";
 
 type UploadSummary = {
   totalOrders: number;
-  matchedDirectly: number;
+  matchedDirect: number;
+  matchedAlias: number;
+  matchedFuzzy: number;
   linesInserted: number;
-  unmatched: {
+  exceptionsInserted: number;
+  exceptions: {
     employeeName: string;
     dayOfWeek: string;
     rawMealText: string;
+    bestScore: number | null;
   }[];
 };
 
@@ -127,16 +131,21 @@ export default function UploadPage() {
             <p className="text-green-700 dark:text-green-400">
               Inserted {summary.linesInserted} line
               {summary.linesInserted === 1 ? "" : "s"}.{" "}
-              {summary.matchedDirectly} of {summary.totalOrders} order
-              {summary.totalOrders === 1 ? "" : "s"} matched directly.
+              {summary.matchedDirect +
+                summary.matchedAlias +
+                summary.matchedFuzzy}{" "}
+              of {summary.totalOrders} order
+              {summary.totalOrders === 1 ? "" : "s"} matched (Direct{" "}
+              {summary.matchedDirect}, Alias {summary.matchedAlias}, Fuzzy{" "}
+              {summary.matchedFuzzy}).
             </p>
-            {summary.unmatched.length > 0 && (
+            {summary.exceptions.length > 0 && (
               <div>
                 <p className="mb-2 font-medium text-zinc-900 dark:text-zinc-50">
-                  Unmatched ({summary.unmatched.length})
+                  Exceptions ({summary.exceptions.length})
                 </p>
                 <ul className="max-h-48 space-y-2 overflow-y-auto rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
-                  {summary.unmatched.map((item, index) => (
+                  {summary.exceptions.map((item, index) => (
                     <li
                       key={`${item.employeeName}-${item.dayOfWeek}-${index}`}
                       className="text-zinc-600 dark:text-zinc-400"
@@ -145,6 +154,12 @@ export default function UploadPage() {
                         {item.employeeName}
                       </span>{" "}
                       · {item.dayOfWeek} · &quot;{item.rawMealText}&quot;
+                      {item.bestScore !== null && (
+                        <>
+                          {" "}
+                          · closest {Math.round(item.bestScore * 100)}%
+                        </>
+                      )}
                     </li>
                   ))}
                 </ul>

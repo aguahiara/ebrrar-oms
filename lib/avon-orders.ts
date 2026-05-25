@@ -1,12 +1,10 @@
-import type { AvonDayOfWeek, AvonOrderRecord } from "@/lib/avon-excel";
-import type { AvonMenuItem } from "@/lib/avon-menu";
 import { addCalendarDays } from "@/lib/calendar-date";
 import { matchMeal, type MenuItemAliasForMatch } from "@/lib/matchMeal";
+import type { AvonMenuItem } from "@/lib/avon-menu";
+import type { DayOfWeek, OrderRecord } from "@/lib/order-types";
 import { supabase } from "@/lib/supabase";
 
-const AVON_CUSTOMER_NAME = "AVON";
-
-const WEEKDAY_OFFSET: Record<AvonDayOfWeek, number> = {
+const WEEKDAY_OFFSET: Record<DayOfWeek, number> = {
   Mon: 0,
   Tue: 1,
   Wed: 2,
@@ -14,7 +12,7 @@ const WEEKDAY_OFFSET: Record<AvonDayOfWeek, number> = {
   Fri: 4,
 };
 
-export type ResolvedAvonOrder = AvonOrderRecord & {
+export type ResolvedOrder = OrderRecord & {
   menuItemId: string | null;
   matchType: "Direct" | "Alias" | "Fuzzy" | null;
   // Populated only for Fuzzy matches (the similarity score that cleared the threshold).
@@ -24,20 +22,20 @@ export type ResolvedAvonOrder = AvonOrderRecord & {
   bestScore: number | null;
 };
 
-export type AvonMatchSummary = {
+export type MatchSummary = {
   totalOrders: number;
   matchedDirect: number;
   matchedAlias: number;
   matchedFuzzy: number;
   exceptions: {
     employeeName: string;
-    dayOfWeek: AvonDayOfWeek;
+    dayOfWeek: DayOfWeek;
     rawMealText: string;
     bestScore: number | null;
   }[];
 };
 
-export function buildMatchSummary(orders: ResolvedAvonOrder[]): AvonMatchSummary {
+export function buildMatchSummary(orders: ResolvedOrder[]): MatchSummary {
   const exceptions = orders
     .filter((order) => order.matchType === null)
     .map(({ employeeName, dayOfWeek, rawMealText, bestScore }) => ({
@@ -58,7 +56,7 @@ export function buildMatchSummary(orders: ResolvedAvonOrder[]): AvonMatchSummary
 
 export function lineServiceDay(
   weekStart: string,
-  dayOfWeek: AvonDayOfWeek,
+  dayOfWeek: DayOfWeek,
 ): string {
   return addCalendarDays(weekStart, WEEKDAY_OFFSET[dayOfWeek]);
 }
@@ -68,11 +66,11 @@ export function lineServiceDay(
  * parsed order. menuItems are filtered to the order's day before matching;
  * matchMeal restricts aliases to that day's item ids internally.
  */
-export async function resolveAvonOrders(
-  orders: AvonOrderRecord[],
+export async function resolveOrders(
+  orders: OrderRecord[],
   menuItems: AvonMenuItem[],
   aliases: MenuItemAliasForMatch[],
-): Promise<ResolvedAvonOrder[]> {
+): Promise<ResolvedOrder[]> {
   return Promise.all(
     orders.map(async (order) => {
       const dayItems = menuItems.filter(
@@ -103,15 +101,19 @@ export async function resolveAvonOrders(
   );
 }
 
-async function fetchAvonCustomerId(): Promise<string> {
+export async function fetchCustomerId(
+  customerDisplayName: string,
+): Promise<string> {
   const { data, error } = await supabase
     .from("customer")
     .select("id")
-    .eq("display_name", AVON_CUSTOMER_NAME)
+    .eq("display_name", customerDisplayName)
     .single();
 
   if (error || !data) {
-    throw new Error(`Failed to load AVON customer: ${error?.message ?? "not found"}`);
+    throw new Error(
+      `Failed to load customer ${customerDisplayName}: ${error?.message ?? "not found"}`,
+    );
   }
 
   return data.id;
@@ -122,12 +124,13 @@ async function fetchAvonCustomerId(): Promise<string> {
  * unmatched orders become Open order_exception rows so nothing silently enters the
  * production count (FRD 5.9).
  */
-export async function persistAvonUpload(params: {
+export async function persistUpload(params: {
+  customerDisplayName: string;
   serviceDay: string;
   sourceFilename: string;
-  orders: ResolvedAvonOrder[];
+  orders: ResolvedOrder[];
 }): Promise<{ batchId: string; linesInserted: number; exceptionsInserted: number }> {
-  const customerId = await fetchAvonCustomerId();
+  const customerId = await fetchCustomerId(params.customerDisplayName);
 
   const { data: batch, error: batchError } = await supabase
     .from("order_batch")
