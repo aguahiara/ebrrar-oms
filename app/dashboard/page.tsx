@@ -88,6 +88,38 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           </table>
         </section>
 
+        {dashboard.proteinCounts.length > 0 && (
+          <section className="mt-8 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900">
+                  <th className="px-4 py-3 text-left font-medium text-zinc-900 dark:text-zinc-50">
+                    Protein
+                  </th>
+                  <th className="px-4 py-3 text-right font-medium text-zinc-900 dark:text-zinc-50">
+                    Total
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashboard.proteinCounts.map((row) => (
+                  <tr
+                    key={row.protein}
+                    className="border-b border-zinc-100 dark:border-zinc-800"
+                  >
+                    <td className="px-4 py-3 text-zinc-900 dark:text-zinc-50">
+                      {row.protein}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-zinc-700 dark:text-zinc-300">
+                      {row.total}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        )}
+
         {dashboard.unmatchedCount > 0 && (
           <p className="mt-4 text-sm text-amber-800 dark:text-amber-300">
             Unmatched lines (no menu item):{" "}

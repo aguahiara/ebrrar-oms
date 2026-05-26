@@ -8,6 +8,11 @@ export type AvonMenuItem = {
   canonical_name: string;
 };
 
+export type MenuVocabItem = {
+  day_of_week: DayOfWeek;
+  name: string;
+};
+
 export async function fetchMenuItems(
   customerDisplayName: string,
 ): Promise<AvonMenuItem[]> {
@@ -69,5 +74,73 @@ export async function fetchAliases(
   return (data ?? []).map((row) => ({
     menu_item_id: row.menu_item_id,
     normalized_text: row.normalized_text,
+  }));
+}
+
+/** Protein vocabulary for the menu version a customer is assigned to. */
+export async function fetchProteins(
+  customerDisplayName: string,
+): Promise<MenuVocabItem[]> {
+  const { data, error } = await supabase
+    .from("protein_option")
+    .select(
+      `
+      day_of_week,
+      name,
+      menu_version!inner (
+        menu_assignment!inner (
+          customer!inner ( display_name )
+        )
+      )
+    `,
+    )
+    .eq(
+      "menu_version.menu_assignment.customer.display_name",
+      customerDisplayName,
+    );
+
+  if (error) {
+    throw new Error(
+      `Failed to load proteins for ${customerDisplayName}: ${error.message}`,
+    );
+  }
+
+  return (data ?? []).map((row) => ({
+    day_of_week: row.day_of_week as DayOfWeek,
+    name: row.name,
+  }));
+}
+
+/** Swallow vocabulary for the menu version a customer is assigned to. */
+export async function fetchSwallows(
+  customerDisplayName: string,
+): Promise<MenuVocabItem[]> {
+  const { data, error } = await supabase
+    .from("swallow_option")
+    .select(
+      `
+      day_of_week,
+      name,
+      menu_version!inner (
+        menu_assignment!inner (
+          customer!inner ( display_name )
+        )
+      )
+    `,
+    )
+    .eq(
+      "menu_version.menu_assignment.customer.display_name",
+      customerDisplayName,
+    );
+
+  if (error) {
+    throw new Error(
+      `Failed to load swallows for ${customerDisplayName}: ${error.message}`,
+    );
+  }
+
+  return (data ?? []).map((row) => ({
+    day_of_week: row.day_of_week as DayOfWeek,
+    name: row.name,
   }));
 }

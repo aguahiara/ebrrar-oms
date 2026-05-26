@@ -76,7 +76,9 @@ export async function POST(request: Request) {
         const { error: aliasError } = await supabase.from("menu_item_alias").insert({
           menu_item_id: menuItemId,
           alias_text: exception.raw_value,
-          normalized_text: normalize(exception.raw_value),
+          // Key the alias on the decomposed meal core (what the matcher compares),
+          // falling back to the raw value for older exceptions without a core.
+          normalized_text: exception.meal_core ?? normalize(exception.raw_value),
         });
 
         if (aliasError) {

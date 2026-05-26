@@ -8,6 +8,8 @@ type UploadSummary = {
   matchedDirect: number;
   matchedAlias: number;
   matchedFuzzy: number;
+  proteinsCaptured: number;
+  swallowsCaptured: number;
   linesInserted: number;
   exceptionsInserted: number;
   exceptions: {
@@ -24,6 +26,7 @@ export default function UploadPage() {
   const [summary, setSummary] = useState<UploadSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [customer, setCustomer] = useState("AVON");
 
   async function handleUpload() {
     if (!file) {
@@ -40,6 +43,7 @@ export default function UploadPage() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("serviceDay", serviceDay);
+      formData.append("customer", customer);
 
       const response = await fetch("/api/upload", {
         method: "POST",
@@ -68,10 +72,25 @@ export default function UploadPage() {
         </h1>
 
         <div className="mb-6">
-          <p className="mb-1 text-sm font-medium text-zinc-500 dark:text-zinc-400">
+          <label
+            htmlFor="customer"
+            className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+          >
             Customer
-          </p>
-          <p className="text-lg text-zinc-900 dark:text-zinc-50">AVON</p>
+          </label>
+          <select
+            id="customer"
+            value={customer}
+            onChange={(event) => {
+              setCustomer(event.target.value);
+              setError(null);
+              setSummary(null);
+            }}
+            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+          >
+            <option value="AVON">AVON</option>
+            <option value="HGI">HGI</option>
+          </select>
         </div>
 
         <div className="mb-6">
@@ -138,6 +157,12 @@ export default function UploadPage() {
               {summary.totalOrders === 1 ? "" : "s"} matched (Direct{" "}
               {summary.matchedDirect}, Alias {summary.matchedAlias}, Fuzzy{" "}
               {summary.matchedFuzzy}).
+            </p>
+            <p className="text-zinc-600 dark:text-zinc-400">
+              Captured {summary.proteinsCaptured} protein
+              {summary.proteinsCaptured === 1 ? "" : "s"} and{" "}
+              {summary.swallowsCaptured} swallow
+              {summary.swallowsCaptured === 1 ? "" : "s"} from the order text.
             </p>
             {summary.exceptions.length > 0 && (
               <div>

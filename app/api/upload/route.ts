@@ -1,4 +1,9 @@
-import { fetchAliases, fetchMenuItems } from "@/lib/avon-menu";
+import {
+  fetchAliases,
+  fetchMenuItems,
+  fetchProteins,
+  fetchSwallows,
+} from "@/lib/avon-menu";
 import {
   buildMatchSummary,
   persistUpload,
@@ -40,11 +45,19 @@ export async function POST(request: Request) {
     const buffer = Buffer.from(await file.arrayBuffer());
     const parse = getParser(customer);
     const orders = parse(buffer);
-    const [menuItems, aliases] = await Promise.all([
+    const [menuItems, aliases, proteins, swallows] = await Promise.all([
       fetchMenuItems(customer),
       fetchAliases(customer),
+      fetchProteins(customer),
+      fetchSwallows(customer),
     ]);
-    const resolved = await resolveOrders(orders, menuItems, aliases);
+    const resolved = await resolveOrders(
+      orders,
+      menuItems,
+      aliases,
+      proteins,
+      swallows,
+    );
     const { linesInserted, exceptionsInserted } = await persistUpload({
       customerDisplayName: customer,
       serviceDay,

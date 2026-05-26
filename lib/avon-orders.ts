@@ -1,6 +1,7 @@
 import { addCalendarDays } from "@/lib/calendar-date";
+import { decomposeMeal } from "@/lib/decompose";
 import { matchMeal, type MenuItemAliasForMatch } from "@/lib/matchMeal";
-import type { AvonMenuItem } from "@/lib/avon-menu";
+import type { AvonMenuItem, MenuVocabItem } from "@/lib/avon-menu";
 import type { DayOfWeek, OrderRecord } from "@/lib/order-types";
 import { supabase } from "@/lib/supabase";
 
@@ -20,6 +21,11 @@ export type ResolvedOrder = OrderRecord & {
   // Populated only when unmatched: the best fuzzy guess + score, surfaced on the exception.
   bestGuessId: string | null;
   bestScore: number | null;
+  // Protein/swallow extracted from the raw order text (FRD 4c), null if none found.
+  proteinName: string | null;
+  swallowName: string | null;
+  // The normalised meal core (raw minus protein/swallow) the matcher compared.
+  mealCore: string;
 };
 
 export type MatchSummary = {
@@ -27,6 +33,8 @@ export type MatchSummary = {
   matchedDirect: number;
   matchedAlias: number;
   matchedFuzzy: number;
+  proteinsCaptured: number;
+  swallowsCaptured: number;
   exceptions: {
     employeeName: string;
     dayOfWeek: DayOfWeek;
@@ -50,6 +58,8 @@ export function buildMatchSummary(orders: ResolvedOrder[]): MatchSummary {
     matchedDirect: orders.filter((order) => order.matchType === "Direct").length,
     matchedAlias: orders.filter((order) => order.matchType === "Alias").length,
     matchedFuzzy: orders.filter((order) => order.matchType === "Fuzzy").length,
+    proteinsCaptured: orders.filter((order) => order.proteinName !== null).length,
+    swallowsCaptured: orders.filter((order) => order.swallowName !== null).length,
     exceptions,
   };
 }
@@ -62,21 +72,37 @@ export function lineServiceDay(
 }
 
 /**
- * Run the FRD 8.4 three-step reconciliation (Direct -> Alias -> Fuzzy) for every
- * parsed order. menuItems are filtered to the order's day before matching;
- * matchMeal restricts aliases to that day's item ids internally.
+ * Resolve every parsed order (FRD 4c + 8.4): first decompose the raw text into
+ * meal core + protein + swallow, then run the three-step reconciliation
+ * (Direct -> Alias -> Fuzzy) on the meal core. menuItems/proteins/swallows are
+ * filtered to the order's day; matchMeal restricts aliases to that day's items.
  */
 export async function resolveOrders(
   orders: OrderRecord[],
   menuItems: AvonMenuItem[],
   aliases: MenuItemAliasForMatch[],
+  proteins: MenuVocabItem[],
+  swallows: MenuVocabItem[],
 ): Promise<ResolvedOrder[]> {
   return Promise.all(
     orders.map(async (order) => {
       const dayItems = menuItems.filter(
         (item) => item.day_of_week === order.dayOfWeek,
       );
-      const result = await matchMeal(order.rawMealText, dayItems, aliases);
+      const dayProteins = proteins
+        .filter((p) => p.day_of_week === order.dayOfWeek)
+        .map((p) => p.name);
+      const daySwallows = swallows
+        .filter((s) => s.day_of_week === order.dayOfWeek)
+        .map((s) => s.name);
+
+      const { proteinName, swallowName, mealRemainder } = decomposeMeal(
+        order.rawMealText,
+        dayProteins,
+        daySwallows,
+      );
+
+      const result = await matchMeal(mealRemainder, dayItems, aliases);
 
       if (result.matchType !== null) {
         return {
@@ -86,6 +112,9 @@ export async function resolveOrders(
           matchScore: result.matchType === "Fuzzy" ? result.score : null,
           bestGuessId: null,
           bestScore: null,
+          proteinName,
+          swallowName,
+          mealCore: mealRemainder,
         };
       }
 
@@ -96,6 +125,9 @@ export async function resolveOrders(
         matchScore: null,
         bestGuessId: result.bestGuessId,
         bestScore: result.bestScore,
+        proteinName,
+        swallowName,
+        mealCore: mealRemainder,
       };
     }),
   );
@@ -162,6 +194,8 @@ export async function persistUpload(params: {
       employee_ref: order.employeeName,
       quantity: 1,
       match_type: order.matchType,
+      protein_name: order.proteinName,
+      swallow_name: order.swallowName,
     }));
 
     const { data: inserted, error: linesError } = await supabase
@@ -183,6 +217,7 @@ export async function persistUpload(params: {
       customer_id: customerId,
       service_day: lineServiceDay(params.serviceDay, order.dayOfWeek),
       raw_value: order.rawMealText,
+      meal_core: order.mealCore,
       employee_ref: order.employeeName,
       exception_type: "Meal not on menu",
       suggested_item_id: order.bestGuessId,

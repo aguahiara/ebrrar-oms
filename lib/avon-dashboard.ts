@@ -12,10 +12,16 @@ export type MealCountRow = {
   total: number;
 };
 
+export type ProteinCountRow = {
+  protein: string;
+  total: number;
+};
+
 export type AvonDashboardData = {
   customerName: string;
   serviceDay: string;
   mealCounts: MealCountRow[];
+  proteinCounts: ProteinCountRow[];
   grandTotal: number;
   unmatchedCount: number;
 };
@@ -44,6 +50,7 @@ export async function fetchAvonDashboard(
     .select(
       `
       menu_item_id,
+      protein_name,
       menu_item ( canonical_name )
     `,
     )
@@ -55,9 +62,15 @@ export async function fetchAvonDashboard(
   }
 
   const counts = new Map<string, number>();
+  const proteins = new Map<string, number>();
   let unmatchedCount = 0;
 
   for (const line of lines ?? []) {
+    if (line.protein_name) {
+      const p = String(line.protein_name);
+      proteins.set(p, (proteins.get(p) ?? 0) + 1);
+    }
+
     if (line.menu_item_id === null) {
       unmatchedCount += 1;
       continue;
@@ -84,12 +97,17 @@ export async function fetchAvonDashboard(
     .map(([meal, total]) => ({ meal, total }))
     .sort((a, b) => b.total - a.total);
 
+  const proteinCounts = [...proteins.entries()]
+    .map(([protein, total]) => ({ protein, total }))
+    .sort((a, b) => b.total - a.total);
+
   const grandTotal = mealCounts.reduce((sum, row) => sum + row.total, 0);
 
   return {
     customerName: AVON_CUSTOMER_NAME,
     serviceDay,
     mealCounts,
+    proteinCounts,
     grandTotal,
     unmatchedCount,
   };

@@ -27,13 +27,41 @@ const FUZZY_THRESHOLD = 0.85;
 
 const PUNCTUATION_TO_STRIP = /[,&+()]/g;
 
-/** Lowercase, trim, collapse whitespace, strip selected punctuation. */
+// Filler/connective words that vary between how Ebrrar names a dish and how a
+// customer writes it ("Jollof Rice & Dodo" vs "Jollof rice served with Dodo").
+// Stripping them to a "meal core" lets the same dish match across phrasings.
+const STOPWORDS = new Set([
+  "served",
+  "serve",
+  "with",
+  "and",
+  "the",
+  "a",
+  "only",
+  "dish",
+  "in",
+  "of",
+]);
+
+/**
+ * Reduce a meal string to its comparable core: lowercase, strip punctuation,
+ * collapse whitespace, and drop filler/connective words.
+ */
 export function normalize(s: string): string {
-  return s
+  const base = s
     .toLowerCase()
     .trim()
-    .replace(PUNCTUATION_TO_STRIP, "")
-    .replace(/\s+/g, " ");
+    .replace(PUNCTUATION_TO_STRIP, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const core = base
+    .split(" ")
+    .filter((word) => word && !STOPWORDS.has(word))
+    .join(" ");
+
+  // Guard against a string that is entirely filler words.
+  return core || base;
 }
 
 function similarityRatio(a: string, b: string): number {
