@@ -1,4 +1,5 @@
 import { parseAvonExcel } from "@/lib/avon-excel";
+import { parseElcrestExcel } from "@/lib/elcrest-excel";
 import { parseHgiExcel } from "@/lib/hgi-excel";
 import type { OrderRecord } from "@/lib/order-types";
 
@@ -7,6 +8,7 @@ export type OrderParser = (buffer: Buffer) => OrderRecord[];
 const parsers: Record<string, OrderParser> = {
   AVON: parseAvonExcel,
   HGI: parseHgiExcel,
+  ELCREST: parseElcrestExcel,
 };
 
 export function getParser(customerDisplayName: string): OrderParser {

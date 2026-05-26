@@ -1,5 +1,5 @@
 import { addCalendarDays } from "@/lib/calendar-date";
-import { decomposeMeal } from "@/lib/decompose";
+import { canonicalizeVocab, decomposeMeal } from "@/lib/decompose";
 import { matchMeal, type MenuItemAliasForMatch } from "@/lib/matchMeal";
 import type { AvonMenuItem, MenuVocabItem } from "@/lib/avon-menu";
 import type { DayOfWeek, OrderRecord } from "@/lib/order-types";
@@ -96,11 +96,22 @@ export async function resolveOrders(
         .filter((s) => s.day_of_week === order.dayOfWeek)
         .map((s) => s.name);
 
-      const { proteinName, swallowName, mealRemainder } = decomposeMeal(
+      const decomposed = decomposeMeal(
         order.rawMealText,
         dayProteins,
         daySwallows,
       );
+      // Explicit protein/swallow columns (Elcrest/Energia) take precedence over
+      // values extracted from the meal text (AVON/HGI).
+      const proteinName =
+        order.proteinRaw !== undefined
+          ? canonicalizeVocab(order.proteinRaw, dayProteins)
+          : decomposed.proteinName;
+      const swallowName =
+        order.swallowRaw !== undefined
+          ? canonicalizeVocab(order.swallowRaw, daySwallows)
+          : decomposed.swallowName;
+      const mealRemainder = decomposed.mealRemainder;
 
       const result = await matchMeal(mealRemainder, dayItems, aliases);
 

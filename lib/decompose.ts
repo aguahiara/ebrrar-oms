@@ -33,6 +33,36 @@ function extractTrailing(
 }
 
 /**
+ * Map a raw protein/swallow value from a dedicated column (e.g. "Cowleg (3 pieces)")
+ * to the canonical menu vocabulary name ("Cowleg"). Returns null if no vocab term
+ * matches. Matches the longest vocab term that the raw value starts with or contains.
+ */
+export function canonicalizeVocab(
+  raw: string | null | undefined,
+  vocabNames: string[],
+): string | null {
+  if (!raw) {
+    return null;
+  }
+  const rawCore = normalize(raw);
+  if (!rawCore) {
+    return null;
+  }
+
+  for (const v of buildVocab(vocabNames)) {
+    if (
+      rawCore === v.core ||
+      rawCore.startsWith(`${v.core} `) ||
+      rawCore.includes(` ${v.core} `) ||
+      rawCore.endsWith(` ${v.core}`)
+    ) {
+      return v.name;
+    }
+  }
+  return null;
+}
+
+/**
  * Split a raw meal string into (protein, swallow, meal core). Strips a trailing
  * protein, then a trailing swallow, named in the day's menu vocabularies —
  * because customers append these to the end ("...Served with Semo and Beef").
