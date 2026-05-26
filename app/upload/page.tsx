@@ -67,9 +67,18 @@ export default function UploadPage() {
   return (
     <div className="flex flex-1 items-center justify-center bg-zinc-50 px-4 py-16 font-sans dark:bg-black">
       <main className="w-full max-w-lg rounded-xl border border-zinc-200 bg-white p-8 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-        <h1 className="mb-6 text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
-          Upload
+        <h1 className="mb-1 text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
+          Upload customer orders
         </h1>
+        <p className="mb-6 text-sm text-zinc-500 dark:text-zinc-400">
+          A customer&rsquo;s weekly order file (AVON, HGI, ELCREST).{" "}
+          <a
+            href="/menu"
+            className="underline hover:text-zinc-900 dark:hover:text-zinc-50"
+          >
+            Uploading the weekly menu instead?
+          </a>
+        </p>
 
         <div className="mb-6">
           <label

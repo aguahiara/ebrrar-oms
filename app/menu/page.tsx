@@ -125,9 +125,19 @@ export default function MenuUploadPage() {
   return (
     <div className="flex flex-1 justify-center bg-zinc-50 px-4 py-16 font-sans dark:bg-black">
       <main className="w-full max-w-4xl">
-        <h1 className="mb-6 text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
-          Weekly Menu Upload
+        <h1 className="mb-1 text-2xl font-semibold text-zinc-900 dark:text-zinc-50">
+          Upload weekly menu
         </h1>
+        <p className="mb-6 text-sm text-zinc-500 dark:text-zinc-400">
+          The Ebrrar &lsquo;Menu for the Week&rsquo; file (the Mon&ndash;Fri
+          option grid).{" "}
+          <a
+            href="/upload"
+            className="underline hover:text-zinc-900 dark:hover:text-zinc-50"
+          >
+            Uploading customer orders instead?
+          </a>
+        </p>
 
         <div className="mb-6 rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
           <label
