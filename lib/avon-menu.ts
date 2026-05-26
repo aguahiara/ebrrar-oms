@@ -18,14 +18,12 @@ export async function fetchMenuItems(
       id,
       day_of_week,
       canonical_name,
-      menu_version!inner (
-        status,
+      customer_menu_item!inner (
         customer!inner ( display_name )
       )
     `,
     )
-    .eq("menu_version.status", "Published")
-    .eq("menu_version.customer.display_name", customerDisplayName);
+    .eq("customer_menu_item.customer.display_name", customerDisplayName);
 
   if (error) {
     throw new Error(
@@ -54,15 +52,13 @@ export async function fetchAliases(
       menu_item_id,
       normalized_text,
       menu_item!inner (
-        menu_version!inner (
-          status,
+        customer_menu_item!inner (
           customer!inner ( display_name )
         )
       )
     `,
     )
-    .eq("menu_item.menu_version.status", "Published")
-    .eq("menu_item.menu_version.customer.display_name", customerDisplayName);
+    .eq("menu_item.customer_menu_item.customer.display_name", customerDisplayName);
 
   if (error) {
     throw new Error(
