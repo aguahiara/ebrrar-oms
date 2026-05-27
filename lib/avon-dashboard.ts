@@ -24,6 +24,8 @@ export type AvonDashboardData = {
   proteinCounts: ProteinCountRow[];
   grandTotal: number;
   unmatchedCount: number;
+  openExceptionCount: number;
+  releasedAt: string | null;
 };
 
 async function fetchAvonCustomerId(): Promise<string> {
@@ -103,6 +105,21 @@ export async function fetchAvonDashboard(
 
   const grandTotal = mealCounts.reduce((sum, row) => sum + row.total, 0);
 
+  const [{ count: openExceptionCount }, { data: release }] = await Promise.all([
+    supabase
+      .from("order_exception")
+      .select("id", { count: "exact", head: true })
+      .eq("customer_id", customerId)
+      .eq("service_day", serviceDay)
+      .eq("status", "Open"),
+    supabase
+      .from("dashboard_release")
+      .select("released_at")
+      .eq("customer_id", customerId)
+      .eq("service_day", serviceDay)
+      .maybeSingle(),
+  ]);
+
   return {
     customerName: AVON_CUSTOMER_NAME,
     serviceDay,
@@ -110,6 +127,8 @@ export async function fetchAvonDashboard(
     proteinCounts,
     grandTotal,
     unmatchedCount,
+    openExceptionCount: openExceptionCount ?? 0,
+    releasedAt: release?.released_at ?? null,
   };
 }
 

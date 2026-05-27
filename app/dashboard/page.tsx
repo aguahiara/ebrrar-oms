@@ -1,3 +1,4 @@
+import { ReleaseControls } from "@/app/dashboard/release-controls";
 import { ServiceDayPicker } from "@/app/dashboard/service-day-picker";
 import {
   fetchAvonDashboard,
@@ -128,6 +129,13 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             </span>
           </p>
         )}
+
+        <ReleaseControls
+          customer={dashboard.customerName}
+          serviceDay={dashboard.serviceDay}
+          openExceptionCount={dashboard.openExceptionCount}
+          releasedAt={dashboard.releasedAt}
+        />
       </main>
     </div>
   );
