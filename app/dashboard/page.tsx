@@ -1,19 +1,23 @@
+import { CustomerPicker } from "@/app/dashboard/customer-picker";
 import { ReleaseControls } from "@/app/dashboard/release-controls";
 import { ServiceDayPicker } from "@/app/dashboard/service-day-picker";
 import {
-  fetchAvonDashboard,
+  CUSTOMERS,
+  fetchDashboard,
   formatServiceDayLabel,
+  parseCustomerParam,
   parseServiceDayParam,
 } from "@/lib/avon-dashboard";
 
 type DashboardPageProps = {
-  searchParams: Promise<{ date?: string }>;
+  searchParams: Promise<{ date?: string; customer?: string }>;
 };
 
 export default async function DashboardPage({ searchParams }: DashboardPageProps) {
   const params = await searchParams;
+  const customer = parseCustomerParam(params.customer);
   const serviceDay = parseServiceDayParam(params.date);
-  const dashboard = await fetchAvonDashboard(serviceDay);
+  const dashboard = await fetchDashboard(customer, serviceDay);
 
   return (
     <div className="flex flex-1 bg-zinc-50 px-4 py-12 font-sans dark:bg-black">
@@ -30,14 +34,29 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           </p>
         </header>
 
-        <div className="mb-8">
-          <label
-            htmlFor="serviceDay"
-            className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-          >
-            Service day
-          </label>
-          <ServiceDayPicker serviceDay={serviceDay} />
+        <div className="mb-8 flex flex-wrap gap-4">
+          <div>
+            <label
+              htmlFor="customer"
+              className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+            >
+              Customer
+            </label>
+            <CustomerPicker
+              customer={customer}
+              serviceDay={serviceDay}
+              customers={CUSTOMERS}
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="serviceDay"
+              className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+            >
+              Service day
+            </label>
+            <ServiceDayPicker serviceDay={serviceDay} customer={customer} />
+          </div>
         </div>
 
         <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">

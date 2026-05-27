@@ -4,7 +4,8 @@ import {
 } from "@/lib/calendar-date";
 import { supabase } from "@/lib/supabase";
 
-const AVON_CUSTOMER_NAME = "AVON";
+export const CUSTOMERS = ["AVON", "HGI", "ELCREST"];
+export const DEFAULT_CUSTOMER = "AVON";
 export const DEFAULT_SERVICE_DAY = "2026-05-11";
 
 export type MealCountRow = {
@@ -17,7 +18,7 @@ export type ProteinCountRow = {
   total: number;
 };
 
-export type AvonDashboardData = {
+export type DashboardData = {
   customerName: string;
   serviceDay: string;
   mealCounts: MealCountRow[];
@@ -28,24 +29,29 @@ export type AvonDashboardData = {
   releasedAt: string | null;
 };
 
-async function fetchAvonCustomerId(): Promise<string> {
+async function fetchDashboardCustomerId(
+  customerDisplayName: string,
+): Promise<string> {
   const { data, error } = await supabase
     .from("customer")
     .select("id")
-    .eq("display_name", AVON_CUSTOMER_NAME)
+    .eq("display_name", customerDisplayName)
     .single();
 
   if (error || !data) {
-    throw new Error(`Failed to load AVON customer: ${error?.message ?? "not found"}`);
+    throw new Error(
+      `Failed to load customer ${customerDisplayName}: ${error?.message ?? "not found"}`,
+    );
   }
 
   return data.id;
 }
 
-export async function fetchAvonDashboard(
+export async function fetchDashboard(
+  customerDisplayName: string,
   serviceDay: string,
-): Promise<AvonDashboardData> {
-  const customerId = await fetchAvonCustomerId();
+): Promise<DashboardData> {
+  const customerId = await fetchDashboardCustomerId(customerDisplayName);
 
   const { data: lines, error } = await supabase
     .from("order_line")
@@ -121,7 +127,7 @@ export async function fetchAvonDashboard(
   ]);
 
   return {
-    customerName: AVON_CUSTOMER_NAME,
+    customerName: customerDisplayName,
     serviceDay,
     mealCounts,
     proteinCounts,
@@ -130,6 +136,13 @@ export async function fetchAvonDashboard(
     openExceptionCount: openExceptionCount ?? 0,
     releasedAt: release?.released_at ?? null,
   };
+}
+
+export function parseCustomerParam(value: string | undefined): string {
+  if (value && CUSTOMERS.includes(value)) {
+    return value;
+  }
+  return DEFAULT_CUSTOMER;
 }
 
 export function parseServiceDayParam(value: string | undefined): string {
