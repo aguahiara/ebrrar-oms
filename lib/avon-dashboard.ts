@@ -145,6 +145,91 @@ export function parseCustomerParam(value: string | undefined): string {
   return DEFAULT_CUSTOMER;
 }
 
+export type ConsolidatedRow = {
+  label: string;
+  counts: Record<string, number>;
+  total: number;
+};
+
+export type ConsolidatedCustomerStatus = {
+  customer: string;
+  total: number;
+  openExceptionCount: number;
+  releasedAt: string | null;
+};
+
+export type ConsolidatedDashboard = {
+  serviceDay: string;
+  customers: string[];
+  mealRows: ConsolidatedRow[];
+  proteinRows: ConsolidatedRow[];
+  grandTotal: number;
+  statuses: ConsolidatedCustomerStatus[];
+};
+
+function pivot(
+  perCustomer: DashboardData[],
+  pick: (d: DashboardData) => { label: string; total: number }[],
+): ConsolidatedRow[] {
+  const labels = new Set<string>();
+  for (const d of perCustomer) {
+    for (const r of pick(d)) {
+      labels.add(r.label);
+    }
+  }
+
+  return [...labels]
+    .map((label) => {
+      const counts: Record<string, number> = {};
+      let total = 0;
+      for (const d of perCustomer) {
+        const n = pick(d).find((r) => r.label === label)?.total ?? 0;
+        counts[d.customerName] = n;
+        total += n;
+      }
+      return { label, counts, total };
+    })
+    .sort((a, b) => b.total - a.total);
+}
+
+/**
+ * Consolidated production view for a service day: one row per meal (and per
+ * protein), one column per customer, plus totals — the single all-orders
+ * dashboard the kitchen works from.
+ */
+export async function fetchConsolidatedDashboard(
+  serviceDay: string,
+): Promise<ConsolidatedDashboard> {
+  const perCustomer = await Promise.all(
+    CUSTOMERS.map((c) => fetchDashboard(c, serviceDay)),
+  );
+
+  const mealRows = pivot(perCustomer, (d) =>
+    d.mealCounts.map((r) => ({ label: r.meal, total: r.total })),
+  );
+  const proteinRows = pivot(perCustomer, (d) =>
+    d.proteinCounts.map((r) => ({ label: r.protein, total: r.total })),
+  );
+
+  const grandTotal = perCustomer.reduce((sum, d) => sum + d.grandTotal, 0);
+
+  const statuses = perCustomer.map((d) => ({
+    customer: d.customerName,
+    total: d.grandTotal,
+    openExceptionCount: d.openExceptionCount,
+    releasedAt: d.releasedAt,
+  }));
+
+  return {
+    serviceDay,
+    customers: CUSTOMERS,
+    mealRows,
+    proteinRows,
+    grandTotal,
+    statuses,
+  };
+}
+
 export function parseServiceDayParam(value: string | undefined): string {
   if (value && isCalendarDate(value)) {
     return value;
