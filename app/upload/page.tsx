@@ -101,6 +101,8 @@ export default function UploadPage() {
             <option value="AVON">AVON</option>
             <option value="HGI">HGI</option>
             <option value="ELCREST">ELCREST</option>
+            <option value="HEIRS">HEIRS</option>
+            <option value="HLA">HLA</option>
           </select>
         </div>
 

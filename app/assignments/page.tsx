@@ -17,7 +17,7 @@ type AssignmentState = {
 };
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"] as const;
-const CUSTOMERS = ["AVON", "HGI", "ELCREST"];
+const CUSTOMERS = ["AVON", "HGI", "ELCREST", "HEIRS", "HLA"];
 
 export default function AssignmentsPage() {
   const [customer, setCustomer] = useState("AVON");

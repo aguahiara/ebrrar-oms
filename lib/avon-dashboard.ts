@@ -4,7 +4,7 @@ import {
 } from "@/lib/calendar-date";
 import { supabase } from "@/lib/supabase";
 
-export const CUSTOMERS = ["AVON", "HGI", "ELCREST"];
+export const CUSTOMERS = ["AVON", "HGI", "ELCREST", "HEIRS", "HLA"];
 export const DEFAULT_CUSTOMER = "AVON";
 export const DEFAULT_SERVICE_DAY = "2026-05-11";
 
