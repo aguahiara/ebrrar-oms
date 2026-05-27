@@ -165,14 +165,20 @@ export async function fetchCustomerId(
 /**
  * Persist a parsed batch. Matched orders (Direct/Alias/Fuzzy) become order_line rows;
  * unmatched orders become Open order_exception rows so nothing silently enters the
- * production count (FRD 5.9).
+ * production count (FRD 5.9). Employees already counted for the same customer +
+ * service day are treated as duplicates and skipped (FR-OV-2, Keep-first rule).
  */
 export async function persistUpload(params: {
   customerDisplayName: string;
   serviceDay: string;
   sourceFilename: string;
   orders: ResolvedOrder[];
-}): Promise<{ batchId: string; linesInserted: number; exceptionsInserted: number }> {
+}): Promise<{
+  batchId: string;
+  linesInserted: number;
+  exceptionsInserted: number;
+  duplicatesSkipped: number;
+}> {
   const customerId = await fetchCustomerId(params.customerDisplayName);
 
   const { data: batch, error: batchError } = await supabase
@@ -191,27 +197,89 @@ export async function persistUpload(params: {
     );
   }
 
-  const matched = params.orders.filter((order) => order.matchType !== null);
-  const unmatched = params.orders.filter((order) => order.matchType === null);
+  // Duplicate detection (FR-OV-2): an employee already counted for this
+  // customer + service day is a duplicate. Rule: Keep first — skip the new one.
+  // (Per-customer Keep-first/Keep-last/Reject rules are a future enhancement.)
+  const serviceDays = Array.from(
+    new Set(
+      params.orders.map((o) => lineServiceDay(params.serviceDay, o.dayOfWeek)),
+    ),
+  );
+
+  const dedupKey = (employeeRef: string, serviceDay: string) =>
+    `${employeeRef.trim().toLowerCase()}__${serviceDay}`;
+  const seen = new Set<string>();
+
+  if (serviceDays.length > 0) {
+    const [existingLines, existingExceptions] = await Promise.all([
+      supabase
+        .from("order_line")
+        .select("employee_ref, service_day")
+        .eq("customer_id", customerId)
+        .in("service_day", serviceDays),
+      supabase
+        .from("order_exception")
+        .select("employee_ref, service_day")
+        .eq("customer_id", customerId)
+        .in("service_day", serviceDays)
+        .eq("status", "Open"),
+    ]);
+
+    for (const row of existingLines.data ?? []) {
+      seen.add(dedupKey(row.employee_ref, row.service_day));
+    }
+    for (const row of existingExceptions.data ?? []) {
+      seen.add(dedupKey(row.employee_ref, row.service_day));
+    }
+  }
+
+  const lineRows: Record<string, unknown>[] = [];
+  const exceptionRows: Record<string, unknown>[] = [];
+  let duplicatesSkipped = 0;
+
+  for (const order of params.orders) {
+    const serviceDay = lineServiceDay(params.serviceDay, order.dayOfWeek);
+    const key = dedupKey(order.employeeName, serviceDay);
+    if (seen.has(key)) {
+      duplicatesSkipped += 1;
+      continue;
+    }
+    seen.add(key);
+
+    if (order.matchType !== null) {
+      lineRows.push({
+        order_batch_id: batch.id,
+        customer_id: customerId,
+        service_day: serviceDay,
+        menu_item_id: order.menuItemId,
+        meal_name_raw: order.rawMealText,
+        employee_ref: order.employeeName,
+        quantity: 1,
+        match_type: order.matchType,
+        protein_name: order.proteinName,
+        swallow_name: order.swallowName,
+      });
+    } else {
+      exceptionRows.push({
+        order_batch_id: batch.id,
+        customer_id: customerId,
+        service_day: serviceDay,
+        raw_value: order.rawMealText,
+        meal_core: order.mealCore,
+        employee_ref: order.employeeName,
+        exception_type: "Meal not on menu",
+        suggested_item_id: order.bestGuessId,
+        suggested_score: order.bestScore,
+        status: "Open",
+      });
+    }
+  }
 
   let linesInserted = 0;
-  if (matched.length > 0) {
-    const lines = matched.map((order) => ({
-      order_batch_id: batch.id,
-      customer_id: customerId,
-      service_day: lineServiceDay(params.serviceDay, order.dayOfWeek),
-      menu_item_id: order.menuItemId,
-      meal_name_raw: order.rawMealText,
-      employee_ref: order.employeeName,
-      quantity: 1,
-      match_type: order.matchType,
-      protein_name: order.proteinName,
-      swallow_name: order.swallowName,
-    }));
-
+  if (lineRows.length > 0) {
     const { data: inserted, error: linesError } = await supabase
       .from("order_line")
-      .insert(lines)
+      .insert(lineRows)
       .select("id");
 
     if (linesError) {
@@ -222,23 +290,10 @@ export async function persistUpload(params: {
   }
 
   let exceptionsInserted = 0;
-  if (unmatched.length > 0) {
-    const exceptions = unmatched.map((order) => ({
-      order_batch_id: batch.id,
-      customer_id: customerId,
-      service_day: lineServiceDay(params.serviceDay, order.dayOfWeek),
-      raw_value: order.rawMealText,
-      meal_core: order.mealCore,
-      employee_ref: order.employeeName,
-      exception_type: "Meal not on menu",
-      suggested_item_id: order.bestGuessId,
-      suggested_score: order.bestScore,
-      status: "Open",
-    }));
-
+  if (exceptionRows.length > 0) {
     const { data: insertedExceptions, error: exceptionError } = await supabase
       .from("order_exception")
-      .insert(exceptions)
+      .insert(exceptionRows)
       .select("id");
 
     if (exceptionError) {
@@ -250,5 +305,10 @@ export async function persistUpload(params: {
     exceptionsInserted = insertedExceptions?.length ?? 0;
   }
 
-  return { batchId: batch.id, linesInserted, exceptionsInserted };
+  return {
+    batchId: batch.id,
+    linesInserted,
+    exceptionsInserted,
+    duplicatesSkipped,
+  };
 }

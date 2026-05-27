@@ -12,6 +12,7 @@ type UploadSummary = {
   swallowsCaptured: number;
   linesInserted: number;
   exceptionsInserted: number;
+  duplicatesSkipped: number;
   exceptions: {
     employeeName: string;
     dayOfWeek: string;
@@ -174,6 +175,13 @@ export default function UploadPage() {
               {summary.swallowsCaptured} swallow
               {summary.swallowsCaptured === 1 ? "" : "s"} from the order text.
             </p>
+            {summary.duplicatesSkipped > 0 && (
+              <p className="text-amber-700 dark:text-amber-400">
+                Skipped {summary.duplicatesSkipped} duplicate
+                {summary.duplicatesSkipped === 1 ? "" : "s"} (employee already
+                counted for that service day).
+              </p>
+            )}
             {summary.exceptions.length > 0 && (
               <div>
                 <p className="mb-2 font-medium text-zinc-900 dark:text-zinc-50">

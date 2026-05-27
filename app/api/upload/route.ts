@@ -58,18 +58,20 @@ export async function POST(request: Request) {
       proteins,
       swallows,
     );
-    const { linesInserted, exceptionsInserted } = await persistUpload({
-      customerDisplayName: customer,
-      serviceDay,
-      sourceFilename: file.name,
-      orders: resolved,
-    });
+    const { linesInserted, exceptionsInserted, duplicatesSkipped } =
+      await persistUpload({
+        customerDisplayName: customer,
+        serviceDay,
+        sourceFilename: file.name,
+        orders: resolved,
+      });
     const summary = buildMatchSummary(resolved);
 
     return NextResponse.json({
       ...summary,
       linesInserted,
       exceptionsInserted,
+      duplicatesSkipped,
     });
   } catch (err) {
     const message =
