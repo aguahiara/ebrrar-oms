@@ -1,7 +1,7 @@
 "use client";
 
 import { mondayOfCurrentWeek } from "@/lib/calendar-date";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type UploadSummary = {
   totalOrders: number;
@@ -28,6 +28,18 @@ export default function UploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [customer, setCustomer] = useState("AVON");
+  const [customers, setCustomers] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetch("/api/customers")
+      .then((r) => r.json())
+      .then((d: { customers?: string[] }) => {
+        const list = d.customers ?? [];
+        setCustomers(list);
+        setCustomer((c) => (list.includes(c) ? c : (list[0] ?? c)));
+      })
+      .catch(() => {});
+  }, []);
 
   async function handleUpload() {
     if (!file) {
@@ -98,11 +110,11 @@ export default function UploadPage() {
             }}
             className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
           >
-            <option value="AVON">AVON</option>
-            <option value="HGI">HGI</option>
-            <option value="ELCREST">ELCREST</option>
-            <option value="HEIRS">HEIRS</option>
-            <option value="HLA">HLA</option>
+            {customers.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
           </select>
         </div>
 

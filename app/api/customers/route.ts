@@ -1,8 +1,20 @@
+import { fetchActiveCustomerNames } from "@/lib/customers";
 import { PARSER_FORMAT_OPTIONS } from "@/lib/parsers";
 import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 
 const VALID_FORMATS = new Set(PARSER_FORMAT_OPTIONS.map((o) => o.value));
+
+export async function GET() {
+  try {
+    const customers = await fetchActiveCustomerNames();
+    return NextResponse.json({ customers });
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Failed to load customers.";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
 
 type CreateBody = {
   displayName?: string;

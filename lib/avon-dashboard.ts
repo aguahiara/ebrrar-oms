@@ -2,6 +2,7 @@ import {
   formatCalendarDateLabel,
   isCalendarDate,
 } from "@/lib/calendar-date";
+import { fetchActiveCustomerNames } from "@/lib/customers";
 import { supabase } from "@/lib/supabase";
 
 export const CUSTOMERS = ["AVON", "HGI", "ELCREST", "HEIRS", "HLA"];
@@ -200,8 +201,9 @@ function pivot(
 export async function fetchConsolidatedDashboard(
   serviceDay: string,
 ): Promise<ConsolidatedDashboard> {
+  const customers = await fetchActiveCustomerNames();
   const perCustomer = await Promise.all(
-    CUSTOMERS.map((c) => fetchDashboard(c, serviceDay)),
+    customers.map((c) => fetchDashboard(c, serviceDay)),
   );
 
   const mealRows = pivot(perCustomer, (d) =>
@@ -222,7 +224,7 @@ export async function fetchConsolidatedDashboard(
 
   return {
     serviceDay,
-    customers: CUSTOMERS,
+    customers,
     mealRows,
     proteinRows,
     grandTotal,

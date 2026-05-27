@@ -17,10 +17,10 @@ type AssignmentState = {
 };
 
 const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"] as const;
-const CUSTOMERS = ["AVON", "HGI", "ELCREST", "HEIRS", "HLA"];
 
 export default function AssignmentsPage() {
   const [customer, setCustomer] = useState("AVON");
+  const [customers, setCustomers] = useState<string[]>([]);
   const [state, setState] = useState<AssignmentState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -47,6 +47,17 @@ export default function AssignmentsPage() {
   useEffect(() => {
     load(customer);
   }, [customer, load]);
+
+  useEffect(() => {
+    fetch("/api/customers")
+      .then((r) => r.json())
+      .then((d: { customers?: string[] }) => {
+        const list = d.customers ?? [];
+        setCustomers(list);
+        setCustomer((c) => (list.includes(c) ? c : (list[0] ?? c)));
+      })
+      .catch(() => {});
+  }, []);
 
   async function handleAssign() {
     setBusy(true);
@@ -122,7 +133,7 @@ export default function AssignmentsPage() {
             onChange={(event) => setCustomer(event.target.value)}
             className="w-full max-w-xs rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
           >
-            {CUSTOMERS.map((c) => (
+            {customers.map((c) => (
               <option key={c} value={c}>
                 {c}
               </option>
