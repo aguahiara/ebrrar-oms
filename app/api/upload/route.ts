@@ -10,7 +10,8 @@ import {
   resolveOrders,
 } from "@/lib/avon-orders";
 import { isCalendarDate } from "@/lib/calendar-date";
-import { getParser } from "@/lib/parsers";
+import { getParserByFormat } from "@/lib/parsers";
+import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
@@ -42,8 +43,21 @@ export async function POST(request: Request) {
       );
     }
 
+    const { data: customerRow } = await supabase
+      .from("customer")
+      .select("parser_format")
+      .eq("display_name", customer)
+      .maybeSingle();
+
+    if (!customerRow) {
+      return NextResponse.json(
+        { error: `Customer ${customer} not found.` },
+        { status: 404 },
+      );
+    }
+
     const buffer = Buffer.from(await file.arrayBuffer());
-    const parse = getParser(customer);
+    const parse = getParserByFormat(customerRow.parser_format);
     const orders = parse(buffer);
     const [menuItems, aliases, proteins, swallows] = await Promise.all([
       fetchMenuItems(customer),
