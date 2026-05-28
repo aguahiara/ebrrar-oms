@@ -62,8 +62,15 @@ export async function proxy(request: NextRequest) {
 
   // ── 3. Require auth for everything else ───────────────────────────────────
   if (!session) {
-    const loginUrl = new URL("/login", request.url);
-    return NextResponse.redirect(loginUrl);
+    // API routes must get a JSON error — never an HTML redirect.
+    // Redirecting /api/* to /login would cause browser fetch() to follow the
+    // redirect, receive the HTML login page, and then fail with
+    // "Unexpected token '<'" (or "Unexpected end of JSON input") when the
+    // caller calls response.json().
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    return NextResponse.redirect(new URL("/login", request.url));
   }
 
   // ── 4. Root redirect → role-based landing is handled by app/page.tsx ──────

@@ -6,12 +6,55 @@ import { ROLE_LABELS } from "@/lib/permissions";
 
 type ProfileWithRoles = UserProfile & { roles?: RoleAssignment[] };
 
+// ─── Safe JSON parsing ────────────────────────────────────────────────────────
+// response.json() on an empty body (e.g. a 307 redirect with no body) or on an
+// HTML page (e.g. the /login page after a mis-routed redirect) throws
+// "Unexpected end of JSON input" or "Unexpected token '<'".
+// safeJson reads the body as text first so we always get a useful error.
+
+async function safeJson<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  if (!text.trim()) {
+    throw new Error(`Server returned an empty response (HTTP ${res.status}).`);
+  }
+  try {
+    const parsed = JSON.parse(text) as T;
+    // Surface server-side error messages so they appear in the UI
+    if (
+      !res.ok &&
+      parsed !== null &&
+      typeof parsed === "object" &&
+      "error" in (parsed as object)
+    ) {
+      throw new Error((parsed as unknown as { error: string }).error);
+    }
+    return parsed;
+  } catch (e) {
+    if (e instanceof SyntaxError) {
+      // Body was not JSON — likely an HTML error page
+      throw new Error(
+        `Server returned a non-JSON response (HTTP ${res.status}). ` +
+          `First 120 chars: ${text.slice(0, 120)}`,
+      );
+    }
+    throw e;
+  }
+}
+
+// ─── Status badge styles ──────────────────────────────────────────────────────
+
 const STATUS_BADGE: Record<string, string> = {
-  active: "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800",
-  inactive: "bg-zinc-100 text-zinc-500 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:border-zinc-700",
-  invited: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-800",
-  suspended: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-800",
+  active:
+    "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800",
+  inactive:
+    "bg-zinc-100 text-zinc-500 border-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:border-zinc-700",
+  invited:
+    "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-800",
+  suspended:
+    "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/40 dark:text-red-400 dark:border-red-800",
 };
+
+// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function AdminUsersPage() {
   const [profiles, setProfiles] = useState<ProfileWithRoles[]>([]);
@@ -24,19 +67,26 @@ export default function AdminUsersPage() {
     let alive = true;
     const params = new URLSearchParams();
     if (search) params.set("search", search);
+
     fetch(`/api/admin/users?${params}`)
-      .then((r) => r.json())
+      .then(safeJson<ProfileWithRoles[]>)
       .then((data) => {
         if (!alive) return;
-        setProfiles(data);
+        // Guard against a non-array (e.g. { error: "..." } on auth failure)
+        setProfiles(Array.isArray(data) ? data : []);
+        setError(null);
         setLoading(false);
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         if (!alive) return;
-        setError(String(err));
+        setError(err instanceof Error ? err.message : String(err));
+        setProfiles([]);
         setLoading(false);
       });
-    return () => { alive = false; };
+
+    return () => {
+      alive = false;
+    };
   }, [refreshKey, search]);
 
   return (
@@ -93,13 +143,19 @@ export default function AdminUsersPage() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-zinc-400 text-sm">
+                <td
+                  colSpan={5}
+                  className="px-4 py-8 text-center text-zinc-400 text-sm"
+                >
                   Loading…
                 </td>
               </tr>
             ) : profiles.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-zinc-400 text-sm">
+                <td
+                  colSpan={5}
+                  className="px-4 py-8 text-center text-zinc-400 text-sm"
+                >
                   {search ? "No users match your search." : "No users found."}
                 </td>
               </tr>
@@ -131,14 +187,22 @@ function UserRow({
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<ProfileWithRoles | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   function toggleExpand() {
     if (!expanded && !detail) {
       setLoadingDetail(true);
+      setDetailError(null);
       fetch(`/api/admin/users/${profile.id}`)
-        .then((r) => r.json())
+        .then(safeJson<ProfileWithRoles>)
         .then((data) => {
           setDetail(data);
+          setLoadingDetail(false);
+        })
+        .catch((err: unknown) => {
+          setDetailError(
+            err instanceof Error ? err.message : "Failed to load details.",
+          );
           setLoadingDetail(false);
         });
     }
@@ -146,8 +210,7 @@ function UserRow({
   }
 
   const statusClass =
-    STATUS_BADGE[profile.status] ??
-    "bg-zinc-100 text-zinc-500 border-zinc-200";
+    STATUS_BADGE[profile.status] ?? "bg-zinc-100 text-zinc-500 border-zinc-200";
 
   return (
     <>
@@ -183,6 +246,10 @@ function UserRow({
           <td colSpan={5} className="px-6 py-4">
             {loadingDetail ? (
               <p className="text-sm text-zinc-400">Loading…</p>
+            ) : detailError ? (
+              <p className="text-sm text-red-600 dark:text-red-400">
+                {detailError}
+              </p>
             ) : (
               <UserDetail
                 profile={detail ?? profile}
@@ -215,31 +282,39 @@ function UserDetail({
   async function handleStatusChange(newStatus: string) {
     setSaving(true);
     setMsg("");
-    const res = await fetch(`/api/admin/users/${profile.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: newStatus }),
-    });
-    setSaving(false);
-    if (res.ok) {
+    try {
+      const res = await fetch(`/api/admin/users/${profile.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      // safeJson also throws on non-2xx with a JSON { error } body
+      await safeJson<UserProfile>(res);
       setStatus(newStatus as UserProfile["status"]);
       setMsg("Saved.");
       onUpdate();
-    } else {
-      setMsg("Failed to save.");
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Failed to save.");
+    } finally {
+      setSaving(false);
     }
   }
 
   async function deactivateRole(roleId: string) {
-    const res = await fetch(`/api/admin/users/${profile.id}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "deactivate_role",
-        role_assignment_id: roleId,
-      }),
-    });
-    if (res.ok) onUpdate();
+    try {
+      const res = await fetch(`/api/admin/users/${profile.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "deactivate_role",
+          role_assignment_id: roleId,
+        }),
+      });
+      await safeJson<{ ok: boolean }>(res);
+      onUpdate();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Failed to deactivate role.");
+    }
   }
 
   return (
@@ -248,11 +323,15 @@ function UserDetail({
         {/* Profile info */}
         <div>
           <p className="text-xs text-zinc-500 mb-1">Email</p>
-          <p className="text-sm text-zinc-800 dark:text-zinc-200">{profile.email}</p>
+          <p className="text-sm text-zinc-800 dark:text-zinc-200">
+            {profile.email}
+          </p>
         </div>
         <div>
           <p className="text-xs text-zinc-500 mb-1">Phone</p>
-          <p className="text-sm text-zinc-800 dark:text-zinc-200">{profile.phone ?? "—"}</p>
+          <p className="text-sm text-zinc-800 dark:text-zinc-200">
+            {profile.phone ?? "—"}
+          </p>
         </div>
         <div>
           <p className="text-xs text-zinc-500 mb-1">Status</p>
@@ -269,7 +348,13 @@ function UserDetail({
         </div>
       </div>
 
-      {msg && <p className="text-xs text-emerald-600 dark:text-emerald-400">{msg}</p>}
+      {msg && (
+        <p
+          className={`text-xs ${msg === "Saved." ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
+        >
+          {msg}
+        </p>
+      )}
 
       {/* Roles */}
       {profile.roles && profile.roles.length > 0 && (
@@ -288,7 +373,11 @@ function UserDetail({
                   <span className="text-zinc-400">— {r.customer_name}</span>
                 )}
                 <span
-                  className={`px-1.5 py-0.5 rounded text-xs font-medium border ${r.active ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800" : "bg-zinc-100 text-zinc-400 border-zinc-200 dark:bg-zinc-800 dark:border-zinc-700"}`}
+                  className={`px-1.5 py-0.5 rounded text-xs font-medium border ${
+                    r.active
+                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-400 dark:border-emerald-800"
+                      : "bg-zinc-100 text-zinc-400 border-zinc-200 dark:bg-zinc-800 dark:border-zinc-700"
+                  }`}
                 >
                   {r.active ? "Active" : "Inactive"}
                 </span>
