@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
+import { getAppSession } from "@/lib/auth";
 
 async function getCustomerId(displayName: string): Promise<string | null> {
   const { data } = await supabase
@@ -23,6 +24,8 @@ async function getPublishedMenuId(): Promise<string | null> {
 }
 
 export async function GET(request: Request) {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const customer = new URL(request.url).searchParams.get("customer");
     if (!customer) {
@@ -92,6 +95,8 @@ type PostBody = {
 };
 
 export async function POST(request: Request) {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const body = (await request.json()) as PostBody;
     const { action, customer } = body;

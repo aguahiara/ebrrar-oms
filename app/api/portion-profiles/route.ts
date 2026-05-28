@@ -3,8 +3,11 @@ import {
   fetchPortionProfiles,
 } from "@/lib/portion-profiles";
 import { NextResponse } from "next/server";
+import { getAppSession } from "@/lib/auth";
 
 export async function GET(request: Request) {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const { searchParams } = new URL(request.url);
     const customerId = searchParams.get("customerId") ?? undefined;
@@ -19,6 +22,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const body = await request.json();
     const { customer_id, name, effective_from, effective_to, default_overage_percentage, notes } =

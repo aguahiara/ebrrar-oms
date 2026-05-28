@@ -10,7 +10,7 @@ import type {
   UpsertPortionComponentInput,
   UpsertPackagingProfileInput,
 } from "@/lib/portion-types";
-import { CopyProfileModal } from "@/app/portion-profiles/[id]/copy-modal";
+import { CopyProfileModal } from "@/app/(app)/portion-profiles/[id]/copy-modal";
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
@@ -802,7 +802,7 @@ export default function PortionProfileDetailPage() {
             sourceProfileId={id}
             sourceProfileName={profile.name}
             onClose={() => setShowCopyModal(false)}
-            onCopied={(newId) => {
+            onCopied={(newId: string) => {
               setShowCopyModal(false);
               router.push(`/portion-profiles/${newId}`);
             }}

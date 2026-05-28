@@ -1,3 +1,4 @@
+import { getAppSession } from "@/lib/auth";
 import {
   fetchAliases,
   fetchMenuItems,
@@ -15,6 +16,8 @@ import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 
 export async function POST(request: Request) {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const formData = await request.formData();
     const file = formData.get("file");

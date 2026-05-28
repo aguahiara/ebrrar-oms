@@ -1,6 +1,7 @@
 import { isCalendarDate } from "@/lib/calendar-date";
 import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
+import { getAppSession } from "@/lib/auth";
 
 type ReleaseBody = {
   customer?: string;
@@ -10,6 +11,8 @@ type ReleaseBody = {
 };
 
 export async function POST(request: Request) {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const { customer, serviceDay, action, reason } =
       (await request.json()) as ReleaseBody;

@@ -1,3 +1,4 @@
+import { getAppSession } from "@/lib/auth";
 import { fetchCustomerMenu } from "@/lib/customer-menu";
 import { buildMenuPdf } from "@/lib/customer-menu-pdf";
 
@@ -5,6 +6,8 @@ export async function GET(
   _request: Request,
   { params }: { params: Promise<{ customer: string }> },
 ) {
+  const session = await getAppSession();
+  if (!session) return new Response("Unauthorized", { status: 401 });
   try {
     const { customer } = await params;
     const name = decodeURIComponent(customer);

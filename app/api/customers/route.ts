@@ -2,10 +2,13 @@ import { fetchActiveCustomerNames } from "@/lib/customers";
 import { PARSER_FORMAT_OPTIONS } from "@/lib/parsers";
 import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
+import { getAppSession } from "@/lib/auth";
 
 const VALID_FORMATS = new Set(PARSER_FORMAT_OPTIONS.map((o) => o.value));
 
 export async function GET() {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const customers = await fetchActiveCustomerNames();
     return NextResponse.json({ customers });
@@ -22,6 +25,8 @@ type CreateBody = {
 };
 
 export async function POST(request: Request) {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const { displayName, parserFormat } = (await request.json()) as CreateBody;
 

@@ -5,8 +5,11 @@ import {
 } from "@/lib/production-quantities";
 import { isCalendarDate } from "@/lib/calendar-date";
 import { NextResponse } from "next/server";
+import { getAppSession } from "@/lib/auth";
 
 export async function GET() {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const runs = await fetchRecentProductionRuns(20);
     return NextResponse.json(runs);
@@ -17,6 +20,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const body = await request.json();
     const { service_day, customer_id, save } = body;

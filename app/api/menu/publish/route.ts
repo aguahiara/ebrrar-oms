@@ -1,9 +1,12 @@
+import { getAppSession } from "@/lib/auth";
 import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 
 type PublishBody = { menuVersionId?: string };
 
 export async function POST(request: Request) {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const { menuVersionId } = (await request.json()) as PublishBody;
 

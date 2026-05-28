@@ -4,7 +4,9 @@
       "Bash(Get-ChildItem -Path \"C:\\\\Projects\\\\ebrrar-oms\" -Force)",
       "Bash(Select-Object Name, PSIsContainer)",
       "Bash(Format-Table -AutoSize)",
-      "Bash(grep -E \"\\\\.ts$\")"
+      "Bash(grep -E \"\\\\.ts$\")",
+      "Bash(Select-Object Name, FullName)",
+      "PowerShell(\\(Get-Content \"C:\\\\Projects\\\\ebrrar-oms\\\\node_modules\\\\next\\\\package.json\" | ConvertFrom-Json\\).version)"
     ]
   }
 }

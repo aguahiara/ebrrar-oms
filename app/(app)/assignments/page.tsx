@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 type Item = {
   id: string;
@@ -23,40 +23,46 @@ export default function AssignmentsPage() {
   const [customers, setCustomers] = useState<string[]>([]);
   const [state, setState] = useState<AssignmentState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-
-  const load = useCallback(async (c: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/assignments?customer=${encodeURIComponent(c)}`);
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error ?? "Failed to load.");
-      }
-      setState(data as AssignmentState);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load.");
-      setState(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
-    load(customer);
-  }, [customer, load]);
+    let alive = true;
+    fetch(`/api/assignments?customer=${encodeURIComponent(customer)}`)
+      .then((r) => r.json())
+      .then((data: AssignmentState & { error?: string }) => {
+        if (!alive) return;
+        if (data.error) {
+          setError(data.error);
+          setState(null);
+        } else {
+          setError(null);
+          setState(data);
+        }
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (!alive) return;
+        setError(err instanceof Error ? err.message : "Failed to load.");
+        setState(null);
+        setLoading(false);
+      });
+    return () => { alive = false; };
+  }, [customer, refreshKey]);
 
   useEffect(() => {
+    let alive = true;
     fetch("/api/customers")
       .then((r) => r.json())
       .then((d: { customers?: string[] }) => {
+        if (!alive) return;
         const list = d.customers ?? [];
         setCustomers(list);
         setCustomer((c) => (list.includes(c) ? c : (list[0] ?? c)));
       })
       .catch(() => {});
+    return () => { alive = false; };
   }, []);
 
   async function handleAssign() {
@@ -72,7 +78,7 @@ export default function AssignmentsPage() {
       if (!res.ok) {
         throw new Error(data.error ?? "Assign failed.");
       }
-      await load(customer);
+      setRefreshKey((k) => k + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Assign failed.");
     } finally {
@@ -104,7 +110,7 @@ export default function AssignmentsPage() {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Toggle failed.");
-      await load(customer);
+      setRefreshKey((k) => k + 1);
     }
   }
 

@@ -1,3 +1,4 @@
+import { getAppSession } from "@/lib/auth";
 import { normalize } from "@/lib/matchMeal";
 import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
@@ -12,6 +13,8 @@ type ResolveBody = {
 };
 
 export async function POST(request: Request) {
+  const session = await getAppSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const body = (await request.json()) as ResolveBody;
     const { exceptionId, action, menuItemId, saveAsAlias = false } = body;

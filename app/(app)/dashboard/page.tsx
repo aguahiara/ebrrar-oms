@@ -1,5 +1,5 @@
-import { ReleaseControls } from "@/app/dashboard/release-controls";
-import { ServiceDayPicker } from "@/app/dashboard/service-day-picker";
+import { ReleaseControls } from "@/app/(app)/dashboard/release-controls";
+import { ServiceDayPicker } from "@/app/(app)/dashboard/service-day-picker";
 import {
   type ConsolidatedRow,
   fetchConsolidatedDashboard,

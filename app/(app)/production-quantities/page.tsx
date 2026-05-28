@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import type { AggregateReportLine, MissingProfileFlag, ProductionQuantityReport } from "@/lib/portion-types";
-import { BreakdownModal } from "@/app/production-quantities/breakdown-modal";
+import { BreakdownModal } from "@/app/(app)/production-quantities/breakdown-modal";
 import { isCalendarDate } from "@/lib/calendar-date";
 
 type Customer = { id: string; display_name: string };

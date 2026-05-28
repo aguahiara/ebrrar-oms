@@ -1,4 +1,4 @@
-import { NewCustomerForm } from "@/app/customers/new-customer-form";
+import { NewCustomerForm } from "@/app/(app)/customers/new-customer-form";
 import { PARSER_FORMAT_OPTIONS } from "@/lib/parsers";
 import { supabase } from "@/lib/supabase";
 

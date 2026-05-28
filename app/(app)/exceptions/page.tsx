@@ -7,7 +7,7 @@ import {
 } from "@/lib/avon-exceptions";
 import { DEFAULT_SERVICE_DAY, formatServiceDayLabel } from "@/lib/avon-dashboard";
 import type { AvonMenuItem } from "@/lib/avon-menu";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
 type ResolveAction = "map" | "drop" | "accept";
 
@@ -30,41 +30,38 @@ export default function ExceptionsPage() {
   const [error, setError] = useState<string | null>(null);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
 
-  const loadData = useCallback(async (day: string) => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const [openExceptions, dayMenuItems] = await Promise.all([
-        fetchOpenExceptions(day),
-        fetchAvonMenuItemsForServiceDay(day),
-      ]);
-
-      setExceptions(openExceptions);
-      setMenuItems(dayMenuItems);
-
-      const initialSelection: Record<string, string> = {};
-      for (const ex of openExceptions) {
-        if (ex.suggested_item_id) {
-          initialSelection[ex.id] = ex.suggested_item_id;
-        } else if (dayMenuItems[0]) {
-          initialSelection[ex.id] = dayMenuItems[0].id;
-        }
-      }
-      setSelectedMenuItemId(initialSelection);
-      setSaveAsAlias({});
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load exceptions.");
-      setExceptions([]);
-      setMenuItems([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
-    loadData(serviceDay);
-  }, [serviceDay, loadData]);
+    let alive = true;
+    Promise.all([
+      fetchOpenExceptions(serviceDay),
+      fetchAvonMenuItemsForServiceDay(serviceDay),
+    ])
+      .then(([openExceptions, dayMenuItems]) => {
+        if (!alive) return;
+        setExceptions(openExceptions);
+        setMenuItems(dayMenuItems);
+        const initialSelection: Record<string, string> = {};
+        for (const ex of openExceptions) {
+          if (ex.suggested_item_id) {
+            initialSelection[ex.id] = ex.suggested_item_id;
+          } else if (dayMenuItems[0]) {
+            initialSelection[ex.id] = dayMenuItems[0].id;
+          }
+        }
+        setSelectedMenuItemId(initialSelection);
+        setSaveAsAlias({});
+        setError(null);
+        setLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (!alive) return;
+        setError(err instanceof Error ? err.message : "Failed to load exceptions.");
+        setExceptions([]);
+        setMenuItems([]);
+        setLoading(false);
+      });
+    return () => { alive = false; };
+  }, [serviceDay]);
 
   async function handleResolve(
     exception: OpenOrderException,
