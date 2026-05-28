@@ -1,4 +1,4 @@
-import { ReleaseControls } from "@/app/(app)/dashboard/release-controls";
+import { CustomerCard } from "@/app/(app)/dashboard/release-controls";
 import { ServiceDayPicker } from "@/app/(app)/dashboard/service-day-picker";
 import {
   type ConsolidatedRow,
@@ -108,19 +108,28 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
   const serviceDay = parseServiceDayParam(params.date);
   const data = await fetchConsolidatedDashboard(serviceDay);
 
+  const hasOrders = data.cards.length > 0;
+
   return (
     <div className="flex flex-1 bg-zinc-50 px-4 py-12 font-sans dark:bg-black">
-      <main className="mx-auto w-full max-w-3xl">
+      <main className="mx-auto w-full max-w-4xl">
         <header className="mb-8">
           <p className="text-sm font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-            Order management
+            Production dashboard
           </p>
           <h1 className="mt-1 text-3xl font-semibold text-zinc-900 dark:text-zinc-50">
-            All Orders
+            Order Review
           </h1>
           <p className="mt-2 text-lg text-zinc-600 dark:text-zinc-400">
-            {formatServiceDayLabel(serviceDay)} · {data.grandTotal} meals across{" "}
-            {data.customers.length} customers
+            {formatServiceDayLabel(serviceDay)}
+            {hasOrders && (
+              <>
+                {" "}
+                &middot; {data.grandTotal} reconciled meal
+                {data.grandTotal !== 1 ? "s" : ""} across {data.customers.length}{" "}
+                customer{data.customers.length !== 1 ? "s" : ""}
+              </>
+            )}
           </p>
         </header>
 
@@ -134,48 +143,50 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           <ServiceDayPicker serviceDay={serviceDay} />
         </div>
 
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          Meals
-        </h2>
-        <ConsolidatedTable
-          firstColLabel="Meal"
-          rows={data.mealRows}
-          customers={data.customers}
-        />
+        {/* ── No orders empty state ── */}
+        {!hasOrders && (
+          <div className="rounded-xl border border-zinc-200 bg-white p-8 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+            <p className="text-sm text-zinc-500 dark:text-zinc-400">
+              No orders have been uploaded for this service day.
+            </p>
+          </div>
+        )}
 
-        <h2 className="mb-3 mt-8 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          Proteins
-        </h2>
-        <ConsolidatedTable
-          firstColLabel="Protein"
-          rows={data.proteinRows}
-          customers={data.customers}
-        />
-
-        <h2 className="mb-3 mt-8 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          Release
-        </h2>
-        <div className="space-y-4">
-          {data.statuses.map((status) => (
-            <div
-              key={status.customer}
-              className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950"
-            >
-              <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">
-                {status.customer}{" "}
-                <span className="font-normal text-zinc-500 dark:text-zinc-400">
-                  · {status.total} meals
-                </span>
-              </p>
-              <ReleaseControls
-                customer={status.customer}
-                serviceDay={serviceDay}
-                openExceptionCount={status.openExceptionCount}
-                releasedAt={status.releasedAt}
-              />
+        {/* ── Customer status cards ── */}
+        {hasOrders && (
+          <>
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Customer Status
+            </h2>
+            <div className="mb-8 space-y-4">
+              {data.cards.map((card) => (
+                <CustomerCard
+                  key={card.customerId}
+                  card={card}
+                  serviceDay={serviceDay}
+                />
+              ))}
             </div>
-          ))}
-        </div>
+
+            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Meals
+            </h2>
+            <ConsolidatedTable
+              firstColLabel="Meal"
+              rows={data.mealRows}
+              customers={data.customers}
+            />
+
+            <h2 className="mb-3 mt-8 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Proteins
+            </h2>
+            <ConsolidatedTable
+              firstColLabel="Protein"
+              rows={data.proteinRows}
+              customers={data.customers}
+            />
+          </>
+        )}
       </main>
     </div>
   );

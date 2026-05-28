@@ -40,6 +40,8 @@ export async function POST(request: Request) {
         customer_id: null,
         service_week_start: serviceWeekStart,
         status: "Draft",
+        source_filename: file.name,
+        created_by: session.user.email,
       })
       .select("id")
       .single();

@@ -1,6 +1,7 @@
 import { NewCustomerForm } from "@/app/(app)/customers/new-customer-form";
 import { PARSER_FORMAT_OPTIONS } from "@/lib/parsers";
 import { supabase } from "@/lib/supabase";
+import Link from "next/link";
 
 const FORMAT_LABEL: Record<string, string> = Object.fromEntries(
   PARSER_FORMAT_OPTIONS.map((o) => [o.value, o.label]),
@@ -9,7 +10,7 @@ const FORMAT_LABEL: Record<string, string> = Object.fromEntries(
 export default async function CustomersPage() {
   const { data: customers } = await supabase
     .from("customer")
-    .select("display_name, parser_format, status")
+    .select("id, display_name, parser_format, status")
     .order("display_name");
 
   return (
@@ -56,11 +57,16 @@ export default async function CustomersPage() {
               ) : (
                 (customers ?? []).map((c) => (
                   <tr
-                    key={c.display_name}
-                    className="border-b border-zinc-100 dark:border-zinc-800"
+                    key={c.id as string}
+                    className="border-b border-zinc-100 transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:hover:bg-zinc-900"
                   >
                     <td className="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-50">
-                      {c.display_name}
+                      <Link
+                        href={`/customers/${c.id as string}`}
+                        className="hover:text-blue-600 hover:underline dark:hover:text-blue-400"
+                      >
+                        {c.display_name}
+                      </Link>
                     </td>
                     <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
                       {c.parser_format

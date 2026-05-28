@@ -217,12 +217,14 @@ export async function persistUpload(params: {
         .select("employee_ref, service_day")
         .eq("customer_id", customerId)
         .in("service_day", serviceDays),
+      // Check ALL exception statuses, not just Open.
+      // Without this, a re-upload after resolving exceptions (Dropped / AcceptedAsIs)
+      // would not detect those employees as duplicates and would re-insert them.
       supabase
         .from("order_exception")
         .select("employee_ref, service_day")
         .eq("customer_id", customerId)
-        .in("service_day", serviceDays)
-        .eq("status", "Open"),
+        .in("service_day", serviceDays),
     ]);
 
     for (const row of existingLines.data ?? []) {

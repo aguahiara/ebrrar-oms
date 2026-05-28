@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { PortionProfile, PortionProfileStatus } from "@/lib/portion-types";
 
@@ -29,6 +30,7 @@ function StatusBadge({ status }: { status: PortionProfileStatus }) {
 }
 
 export default function PortionProfilesPage() {
+  const router = useRouter();
   const [profiles, setProfiles] = useState<PortionProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -259,12 +261,13 @@ export default function PortionProfilesPage() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <Link
-                          href={`/portion-profiles/${p.id}`}
+                        <button
+                          type="button"
+                          onClick={() => router.push(`/portion-profiles/${p.id}`)}
                           className="text-xs font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
                         >
                           Edit
-                        </Link>
+                        </button>
                         {p.status === "Draft" || p.status === "Superseded" ? (
                           <button
                             onClick={() =>

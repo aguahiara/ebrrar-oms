@@ -139,12 +139,17 @@ export async function requireProfile(): Promise<UserProfile> {
 /**
  * Requires the current session to have one of the specified roles.
  * Redirects to /unauthorized if the role doesn't match.
+ *
+ * ebrrar_super_admin always passes — they have full system access.
  */
 export async function requireRole(allowedRoles: UserRole[]): Promise<AppSession> {
   const session = await getAppSession();
   if (!session) redirect("/login");
   if (session.allRoles.length === 0) redirect("/auth/no-role");
-  if (!allowedRoles.includes(session.selectedRole.role)) redirect("/unauthorized");
+  const role = session.selectedRole.role;
+  if (role !== "ebrrar_super_admin" && !allowedRoles.includes(role)) {
+    redirect("/unauthorized");
+  }
   return session;
 }
 
