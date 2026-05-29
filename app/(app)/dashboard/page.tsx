@@ -1,5 +1,6 @@
 import { CustomerCard } from "@/app/(app)/dashboard/release-controls";
 import { ServiceDayPicker } from "@/app/(app)/dashboard/service-day-picker";
+import { getAppSession } from "@/lib/auth";
 import {
   type ConsolidatedRow,
   fetchConsolidatedDashboard,
@@ -106,7 +107,11 @@ function ConsolidatedTable({
 export default async function DashboardPage({ searchParams }: DashboardPageProps) {
   const params = await searchParams;
   const serviceDay = parseServiceDayParam(params.date);
-  const data = await fetchConsolidatedDashboard(serviceDay);
+  const [data, session] = await Promise.all([
+    fetchConsolidatedDashboard(serviceDay),
+    getAppSession(),
+  ]);
+  const isSuperAdmin = session?.selectedRole.role === "ebrrar_super_admin";
 
   const hasOrders = data.cards.length > 0;
 
@@ -164,6 +169,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
                   key={card.customerId}
                   card={card}
                   serviceDay={serviceDay}
+                  isSuperAdmin={isSuperAdmin}
                 />
               ))}
             </div>

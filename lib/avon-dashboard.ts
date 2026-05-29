@@ -121,7 +121,8 @@ export async function fetchConsolidatedDashboard(
     supabase
       .from("dashboard_release")
       .select("customer_id, released_at")
-      .eq("service_day", serviceDay),
+      .eq("service_day", serviceDay)
+      .is("revoked_at", null), // only active (non-revoked) releases
   ]);
 
   if (linesRes.error)

@@ -65,19 +65,41 @@ function Stat({
   );
 }
 
+// ─── Revoke reason options ────────────────────────────────────────────────────
+
+const REVOKE_REASONS = [
+  "Wrong upload released",
+  "Exceptions discovered after release",
+  "Customer correction received",
+  "Duplicate upload issue",
+  "Other",
+] as const;
+
 // ─── CustomerCard ─────────────────────────────────────────────────────────────
 
 type CustomerCardProps = {
   card: CustomerDashboardCard;
   serviceDay: string;
+  isSuperAdmin: boolean;
 };
 
-export function CustomerCard({ card, serviceDay }: CustomerCardProps) {
+export function CustomerCard({
+  card,
+  serviceDay,
+  isSuperAdmin,
+}: CustomerCardProps) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Accept-all-and-release state
   const [showReason, setShowReason] = useState(false);
   const [reason, setReason] = useState("");
+
+  // Revoke state
+  const [showRevokeConfirm, setShowRevokeConfirm] = useState(false);
+  const [revokeReasonKey, setRevokeReasonKey] = useState<string>("");
+  const [revokeReasonOther, setRevokeReasonOther] = useState<string>("");
 
   async function send(action: string, extra: Record<string, unknown> = {}) {
     setBusy(true);
@@ -103,6 +125,24 @@ export function CustomerCard({ card, serviceDay }: CustomerCardProps) {
     }
   }
 
+  function handleRevokeConfirm() {
+    const resolvedReason =
+      revokeReasonKey === "Other" ? revokeReasonOther.trim() : revokeReasonKey;
+    if (!resolvedReason) return;
+    void send("revoke", { reason: resolvedReason }).then(() => {
+      setShowRevokeConfirm(false);
+      setRevokeReasonKey("");
+      setRevokeReasonOther("");
+    });
+  }
+
+  function handleRevokeCancel() {
+    setShowRevokeConfirm(false);
+    setRevokeReasonKey("");
+    setRevokeReasonOther("");
+    setError(null);
+  }
+
   // Derive which issues are blocking release
   const hasOpenExceptions = card.openExceptionCount > 0;
   const hasUnmatched = card.unmatchedOrders > 0;
@@ -113,6 +153,10 @@ export function CustomerCard({ card, serviceDay }: CustomerCardProps) {
   // by accepting exceptions, so that path would still fail at the backend.
   const canAcceptAllAndRelease =
     hasOpenExceptions && !hasUnmatched && !hasMissingProtein;
+
+  const revokeReasonValid =
+    revokeReasonKey !== "" &&
+    (revokeReasonKey !== "Other" || revokeReasonOther.trim().length > 0);
 
   return (
     <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
@@ -147,11 +191,91 @@ export function CustomerCard({ card, serviceDay }: CustomerCardProps) {
 
       {/* ── Released ── */}
       {card.status === "released" && (
-        <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300">
-          Released on{" "}
-          <span suppressHydrationWarning>
-            {new Date(card.releasedAt!).toLocaleString()}
-          </span>
+        <div className="space-y-3">
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300">
+            Released on{" "}
+            <span suppressHydrationWarning>
+              {new Date(card.releasedAt!).toLocaleString()}
+            </span>
+          </div>
+
+          {/* Revoke button — Super Admin only, hidden while confirm panel is open */}
+          {isSuperAdmin && !showRevokeConfirm && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowRevokeConfirm(true)}
+                className="rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
+              >
+                Revoke Release…
+              </button>
+            </div>
+          )}
+
+          {/* Revoke confirmation panel */}
+          {isSuperAdmin && showRevokeConfirm && (
+            <div className="space-y-3 rounded-md border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/40">
+              <p className="text-sm font-semibold text-red-800 dark:text-red-300">
+                Revoke release for {card.customerName}?
+              </p>
+              <p className="text-xs text-red-700 dark:text-red-400">
+                This will reopen the released orders for correction. Production
+                quantities or manifests generated from this release may need to
+                be regenerated. Continue?
+              </p>
+
+              {/* Reason selector */}
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-red-800 dark:text-red-300">
+                  Reason for revocation <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={revokeReasonKey}
+                  onChange={(e) => {
+                    setRevokeReasonKey(e.target.value);
+                    setRevokeReasonOther("");
+                  }}
+                  className="block w-full rounded-md border border-red-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-500 dark:border-red-800 dark:bg-zinc-900 dark:text-zinc-50"
+                >
+                  <option value="">— Select a reason —</option>
+                  {REVOKE_REASONS.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+
+                {revokeReasonKey === "Other" && (
+                  <input
+                    type="text"
+                    value={revokeReasonOther}
+                    onChange={(e) => setRevokeReasonOther(e.target.value)}
+                    placeholder="Describe the reason…"
+                    className="block w-full rounded-md border border-red-300 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 focus:border-red-500 focus:outline-none focus:ring-1 focus:ring-red-500 dark:border-red-800 dark:bg-zinc-900 dark:text-zinc-50"
+                  />
+                )}
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  disabled={busy || !revokeReasonValid}
+                  onClick={handleRevokeConfirm}
+                  className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {busy ? "Revoking…" : "Confirm revoke"}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={handleRevokeCancel}
+                  className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
