@@ -1,5 +1,6 @@
 import { isCalendarDate } from "@/lib/calendar-date";
 import { getAppSession, logAuditEvent } from "@/lib/auth";
+import { checkPortionReadiness } from "@/lib/portion-readiness";
 import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 
@@ -241,6 +242,23 @@ export async function POST(request: Request) {
           error: `Cannot release: ${missingProteinCount} order line${missingProteinCount !== 1 ? "s" : ""} are missing protein data. Ensure all orders have a protein assigned.`,
           missingProteinCount,
         },
+        { status: 409 },
+      );
+    }
+
+    // ── Guard 5: portion profile readiness ────────────────────────────────
+    // Must run after the order-data guards so we only hit the profile lookup
+    // when orders are clean.  Reuses the same logic as Kitchen Quantities so
+    // release validation and quantity generation never disagree.
+    const portionReadiness = await checkPortionReadiness(
+      customerId,
+      customer,
+      serviceDay,
+    );
+
+    if (portionReadiness.status !== "ready") {
+      return NextResponse.json(
+        { error: portionReadiness.message, portionReadiness },
         { status: 409 },
       );
     }

@@ -24,7 +24,8 @@ async function fetchReleasedCustomers(serviceDay: string): Promise<ReleasedCusto
   const { data, error } = await supabase
     .from("dashboard_release")
     .select("customer_id, customer:customer_id(display_name)")
-    .eq("service_day", serviceDay);
+    .eq("service_day", serviceDay)
+    .is("revoked_at", null); // exclude revoked releases
 
   if (error) throw new Error(`Failed to load releases: ${error.message}`);
 

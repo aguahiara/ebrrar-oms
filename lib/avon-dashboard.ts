@@ -2,6 +2,10 @@ import {
   formatCalendarDateLabel,
   isCalendarDate,
 } from "@/lib/calendar-date";
+import {
+  checkPortionReadiness,
+  type PortionReadiness,
+} from "@/lib/portion-readiness";
 import { supabase } from "@/lib/supabase";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -24,6 +28,9 @@ export type ConsolidatedRow = {
  */
 export type CustomerStatus = "ready" | "needs_work" | "released";
 
+// Re-export so client components can import from a single dashboard module.
+export type { PortionReadiness };
+
 export type CustomerDashboardCard = {
   customerId: string;
   customerName: string;
@@ -45,6 +52,8 @@ export type CustomerDashboardCard = {
   status: CustomerStatus;
   mealCounts: { meal: string; total: number }[];
   proteinCounts: { protein: string; total: number }[];
+  /** Portion profile readiness — "ready" means release is not blocked by profile gaps. */
+  portionReadiness: PortionReadiness;
 };
 
 export type ConsolidatedDashboard = {
@@ -107,7 +116,7 @@ export async function fetchConsolidatedDashboard(
          menu_item_id,
          protein_name,
          customer ( display_name ),
-         menu_item ( canonical_name )`,
+         menu_item ( canonical_name, category )`,
       )
       .eq("service_day", serviceDay),
 
@@ -175,6 +184,8 @@ export async function fetchConsolidatedDashboard(
     missingProtein: number;
     mealMap: Map<string, number>;
     proteinMap: Map<string, number>;
+    /** Distinct menu_item.category values seen in matched lines. */
+    categorySet: Set<string>;
   };
 
   const byCustomer = new Map<string, LineGroup>();
@@ -197,6 +208,7 @@ export async function fetchConsolidatedDashboard(
         missingProtein: 0,
         mealMap: new Map(),
         proteinMap: new Map(),
+        categorySet: new Set(),
       });
     }
 
@@ -207,11 +219,16 @@ export async function fetchConsolidatedDashboard(
     if (line.menu_item_id !== null) {
       g.matchedOrders += 1;
       const mi = Array.isArray(line.menu_item) ? line.menu_item[0] : line.menu_item;
+      const miObj =
+        mi && typeof mi === "object" ? (mi as Record<string, unknown>) : null;
       const meal =
-        mi && typeof mi === "object" && "canonical_name" in mi
-          ? String((mi as Record<string, unknown>).canonical_name)
-          : null;
+        miObj && "canonical_name" in miObj ? String(miObj.canonical_name) : null;
       if (meal) g.mealMap.set(meal, (g.mealMap.get(meal) ?? 0) + 1);
+      const cat =
+        miObj && "category" in miObj && miObj.category
+          ? String(miObj.category)
+          : null;
+      if (cat) g.categorySet.add(cat);
     }
 
     // Protein
@@ -222,6 +239,31 @@ export async function fetchConsolidatedDashboard(
       g.missingProtein += 1;
     }
   }
+
+  // ── Portion readiness: run checks in parallel for non-released customers ──
+  // Released customers already passed this check at release time — skip them.
+  // The categorySet is passed to avoid a redundant DB round-trip per customer.
+
+  const READY_READINESS: PortionReadiness = {
+    status: "ready",
+    message: null,
+    unmappedCategories: [],
+  };
+
+  const readinessMap = new Map<string, PortionReadiness>();
+  await Promise.all(
+    [...byCustomer.entries()]
+      .filter(([custId]) => !releaseByCustomer.has(custId))
+      .map(async ([custId, g]) => {
+        const readiness = await checkPortionReadiness(
+          custId,
+          g.name,
+          serviceDay,
+          [...g.categorySet],
+        );
+        readinessMap.set(custId, readiness);
+      }),
+  );
 
   // ── Build customer cards ─────────────────────────────────────────────────
 
@@ -246,10 +288,19 @@ export async function fetchConsolidatedDashboard(
       .map(([protein, total]) => ({ protein, total }))
       .sort((a, b) => b.total - a.total);
 
+    const portionReadiness = releasedAt
+      ? READY_READINESS
+      : (readinessMap.get(custId) ?? READY_READINESS);
+
     let status: CustomerStatus;
     if (releasedAt) {
       status = "released";
-    } else if (openExceptionCount > 0 || unmatchedOrders > 0 || g.missingProtein > 0) {
+    } else if (
+      openExceptionCount > 0 ||
+      unmatchedOrders > 0 ||
+      g.missingProtein > 0 ||
+      portionReadiness.status !== "ready"
+    ) {
       status = "needs_work";
     } else {
       status = "ready";
@@ -267,6 +318,7 @@ export async function fetchConsolidatedDashboard(
       status,
       mealCounts,
       proteinCounts,
+      portionReadiness,
     });
   }
 

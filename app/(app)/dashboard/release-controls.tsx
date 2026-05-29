@@ -2,7 +2,11 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import type { CustomerDashboardCard, CustomerStatus } from "@/lib/avon-dashboard";
+import type {
+  CustomerDashboardCard,
+  CustomerStatus,
+  PortionReadiness,
+} from "@/lib/avon-dashboard";
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
@@ -61,6 +65,63 @@ function Stat({
       <p className={`mt-0.5 text-lg font-semibold tabular-nums ${valueClass}`}>
         {value}
       </p>
+    </div>
+  );
+}
+
+// ─── Portion readiness indicator ─────────────────────────────────────────────
+
+function PortionReadinessBlock({
+  readiness,
+  customerId,
+}: {
+  readiness: PortionReadiness;
+  customerId: string;
+}) {
+  if (readiness.status === "ready") {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400">
+        <span>✓</span>
+        <span>Portion profile ready</span>
+      </div>
+    );
+  }
+
+  const isMissing = readiness.status === "missing";
+
+  return (
+    <div className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2.5 dark:border-orange-900 dark:bg-orange-950/40">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1">
+          <p className="text-xs font-semibold text-orange-800 dark:text-orange-300">
+            {isMissing ? "Portion profile missing" : "Portion profile incomplete"}
+          </p>
+          {isMissing ? (
+            <p className="text-xs text-orange-700 dark:text-orange-400">
+              No active portion profile found for this customer. Release is
+              blocked until a profile is activated.
+            </p>
+          ) : (
+            <>
+              <p className="text-xs text-orange-700 dark:text-orange-400">
+                {readiness.unmappedCategories.length === 1
+                  ? "1 meal category has"
+                  : `${readiness.unmappedCategories.length} meal categories have`}{" "}
+                no portion component mapping.
+              </p>
+              <p className="mt-0.5 font-mono text-xs text-orange-700 dark:text-orange-400">
+                {readiness.unmappedCategories.join(", ")}
+              </p>
+            </>
+          )}
+        </div>
+        <a
+          href={`/customers/${customerId}`}
+          className="shrink-0 text-xs font-medium text-orange-700 underline hover:text-orange-900 dark:text-orange-400 dark:hover:text-orange-200"
+        >
+          Fix →
+        </a>
+      </div>
     </div>
   );
 }
@@ -189,6 +250,16 @@ export function CustomerCard({
         />
       </div>
 
+      {/* ── Portion readiness (non-released cards only) ── */}
+      {card.status !== "released" && (
+        <div className="mb-4">
+          <PortionReadinessBlock
+            readiness={card.portionReadiness}
+            customerId={card.customerId}
+          />
+        </div>
+      )}
+
       {/* ── Released ── */}
       {card.status === "released" && (
         <div className="space-y-3">
@@ -303,6 +374,14 @@ export function CustomerCard({
                 <span className="font-semibold">{card.openExceptionCount}</span>{" "}
                 open exception{card.openExceptionCount !== 1 ? "s" : ""} — resolve
                 or accept them before release.
+              </p>
+            )}
+            {card.portionReadiness.status !== "ready" && (
+              <p className="text-sm text-amber-800 dark:text-amber-300">
+                <span className="font-semibold">Portion profile</span>{" "}
+                {card.portionReadiness.status === "missing"
+                  ? "— no active profile found."
+                  : `— ${card.portionReadiness.unmappedCategories.length} meal ${card.portionReadiness.unmappedCategories.length === 1 ? "category" : "categories"} not mapped.`}
               </p>
             )}
           </div>
