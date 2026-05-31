@@ -71,7 +71,7 @@ function UploadResultPanel({
     summary.matchedDirect + summary.matchedAlias + summary.matchedFuzzy;
   const hasExceptions = summary.exceptionsInserted > 0;
   const previewExceptions = summary.exceptions.slice(0, 10);
-  const exceptionsUrl = `/exceptions?customerId=${summary.customerId}&date=${summary.serviceDay}`;
+  const exceptionsUrl = `/exceptions?customerId=${summary.customerId}&serviceWeekStart=${summary.serviceDay}`;
   const dashboardUrl = `/dashboard?date=${summary.serviceDay}`;
 
   return (

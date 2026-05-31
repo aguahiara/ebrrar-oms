@@ -1,4 +1,4 @@
-import { parseCalendarDate } from "@/lib/calendar-date";
+import { parseCalendarDate, addCalendarDays } from "@/lib/calendar-date";
 import type { AvonMenuItem } from "@/lib/avon-menu";
 import { fetchMenuItems } from "@/lib/avon-menu";
 import type { DayOfWeek } from "@/lib/order-types";
@@ -63,15 +63,19 @@ export async function fetchAllCustomers(): Promise<CustomerSummary[]> {
 }
 
 /**
- * Fetch exceptions for a specific customer + service day.
+ * Fetch exceptions for a specific customer + service day (or a full service week).
+ *
+ * Pass `serviceWeekStart` (a Monday YYYY-MM-DD) to load all exceptions for
+ * the Mon–Fri range.  Pass `serviceDay` to load a single day.
  * Pass `statusFilter: "All"` to skip the status clause entirely.
  */
 export async function fetchExceptions(params: {
   customerId: string;
-  serviceDay: string;
+  serviceDay?: string;
+  serviceWeekStart?: string;
   statusFilter?: ExceptionStatusFilter;
 }): Promise<OpenOrderException[]> {
-  const { customerId, serviceDay, statusFilter = "Open" } = params;
+  const { customerId, serviceDay, serviceWeekStart, statusFilter = "Open" } = params;
 
   let query = supabase
     .from("order_exception")
@@ -94,8 +98,16 @@ export async function fetchExceptions(params: {
     `,
     )
     .eq("customer_id", customerId)
-    .eq("service_day", serviceDay)
+    .order("service_day")
     .order("employee_ref");
+
+  if (serviceWeekStart) {
+    // Mon (+0) through Fri (+4)
+    const weekDates = [0, 1, 2, 3, 4].map((n) => addCalendarDays(serviceWeekStart, n));
+    query = query.in("service_day", weekDates);
+  } else {
+    query = query.eq("service_day", serviceDay ?? "");
+  }
 
   if (statusFilter !== "All") {
     query = query.eq("status", statusFilter);

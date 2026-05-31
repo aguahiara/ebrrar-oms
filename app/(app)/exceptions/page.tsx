@@ -13,6 +13,7 @@ import {
   type OpenOrderException,
 } from "@/lib/avon-exceptions";
 import { DEFAULT_SERVICE_DAY, formatServiceDayLabel } from "@/lib/avon-dashboard";
+import { addCalendarDays } from "@/lib/calendar-date";
 import type { AvonMenuItem } from "@/lib/avon-menu";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -71,6 +72,12 @@ function ExceptionsContent() {
   const [serviceDay, setServiceDay] = useState(
     searchParams.get("date") || DEFAULT_SERVICE_DAY,
   );
+  const [serviceWeekStart, setServiceWeekStart] = useState(
+    searchParams.get("serviceWeekStart") || "",
+  );
+  // weekMode is true when we arrived via the upload "Resolve Exceptions" link
+  const weekMode = serviceWeekStart !== "";
+
   const [customerId, setCustomerId] = useState(
     searchParams.get("customerId") || "",
   );
@@ -129,7 +136,9 @@ function ExceptionsContent() {
       setError(null);
 
       try {
-        const data = await fetchExceptions({ customerId, serviceDay, statusFilter });
+        const data = weekMode
+          ? await fetchExceptions({ customerId, serviceWeekStart, statusFilter })
+          : await fetchExceptions({ customerId, serviceDay, statusFilter });
         if (!alive) return;
         setExceptions(data);
 
@@ -156,7 +165,7 @@ function ExceptionsContent() {
 
     void run();
     return () => { alive = false; };
-  }, [customerId, serviceDay, statusFilter, refreshKey]);
+  }, [customerId, serviceDay, serviceWeekStart, weekMode, statusFilter, refreshKey]);
 
   // ── Load menu items when customer / day changes ───────────────────────────
   useEffect(() => {
@@ -169,10 +178,35 @@ function ExceptionsContent() {
       }
 
       try {
-        const data = await fetchMenuItemsForServiceDay(
-          selectedCustomer.display_name,
-          serviceDay,
-        );
+        let data: AvonMenuItem[];
+
+        if (weekMode && serviceWeekStart) {
+          // Load all five weekdays and merge into a single deduplicated list
+          const weekDates = [0, 1, 2, 3, 4].map((n) =>
+            addCalendarDays(serviceWeekStart, n),
+          );
+          const allDaysItems = await Promise.all(
+            weekDates.map((d) =>
+              fetchMenuItemsForServiceDay(selectedCustomer.display_name, d),
+            ),
+          );
+          const seen = new Set<string>();
+          data = [];
+          for (const dayItems of allDaysItems) {
+            for (const item of dayItems) {
+              if (!seen.has(item.id)) {
+                seen.add(item.id);
+                data.push(item);
+              }
+            }
+          }
+        } else {
+          data = await fetchMenuItemsForServiceDay(
+            selectedCustomer.display_name,
+            serviceDay,
+          );
+        }
+
         if (!alive) return;
         setMenuItems(data);
         if (data[0]) {
@@ -195,7 +229,7 @@ function ExceptionsContent() {
     void run();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [customerId, serviceDay, selectedCustomer]);
+  }, [customerId, serviceDay, serviceWeekStart, weekMode, selectedCustomer]);
 
   // ── Helper: show timed success banner ────────────────────────────────────
   function showSuccess(msg: string) {
@@ -295,7 +329,9 @@ function ExceptionsContent() {
           </h1>
           {selectedCustomer && (
             <p className="mt-2 text-lg text-zinc-600 dark:text-zinc-400">
-              {formatServiceDayLabel(serviceDay)}
+              {weekMode
+                ? `Week starting ${formatServiceDayLabel(serviceWeekStart)}`
+                : formatServiceDayLabel(serviceDay)}
             </p>
           )}
         </header>
@@ -322,14 +358,18 @@ function ExceptionsContent() {
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="serviceDay" className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              Service day
+            <label htmlFor="serviceDateFilter" className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+              {weekMode ? "Service week start" : "Service day"}
             </label>
             <input
-              id="serviceDay"
+              id="serviceDateFilter"
               type="date"
-              value={serviceDay}
-              onChange={(e) => { if (e.target.value) setServiceDay(e.target.value); }}
+              value={weekMode ? serviceWeekStart : serviceDay}
+              onChange={(e) => {
+                if (!e.target.value) return;
+                if (weekMode) setServiceWeekStart(e.target.value);
+                else setServiceDay(e.target.value);
+              }}
               className="rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
             />
           </div>
@@ -391,7 +431,9 @@ function ExceptionsContent() {
         {customerId && !loading && exceptions.length === 0 && (
           <div className="rounded-xl border border-zinc-200 bg-white p-8 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              No exceptions found for this customer and service date.
+              {weekMode
+                ? "No exceptions found for this customer and service week."
+                : "No exceptions found for this customer and service date."}
             </p>
           </div>
         )}
