@@ -48,7 +48,7 @@ export async function POST(request: Request) {
 
     const { data: customerRow } = await supabase
       .from("customer")
-      .select("parser_format")
+      .select("id, parser_format")
       .eq("display_name", customer)
       .maybeSingle();
 
@@ -89,6 +89,9 @@ export async function POST(request: Request) {
       linesInserted,
       exceptionsInserted,
       duplicatesSkipped,
+      customerId: customerRow.id as string,
+      customerName: customer,
+      serviceDay,
     });
   } catch (err) {
     const message =
