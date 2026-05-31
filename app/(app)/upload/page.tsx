@@ -212,29 +212,36 @@ function UploadResultPanel({
         >
           Upload Another File
         </button>
+
+        {/* Reject Upload — shown whenever a batch was created */}
+        {summary.batchId && (
+          <button
+            type="button"
+            onClick={() => {
+              setShowRejectConfirm(true);
+              setRejectError(null);
+            }}
+            disabled={showRejectConfirm}
+            className="rounded-lg border border-red-300 bg-white px-4 py-2.5 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-40 dark:border-red-700 dark:bg-zinc-900 dark:text-red-400 dark:hover:bg-red-950/40"
+          >
+            Reject Upload
+          </button>
+        )}
       </div>
 
-      {/* ── Reject upload ── */}
-      {(summary.linesInserted > 0 || summary.exceptionsInserted > 0) && (
-        <div className="border-t border-zinc-100 pt-4 dark:border-zinc-800">
-          {!showRejectConfirm ? (
-            <button
-              type="button"
-              onClick={() => {
-                setShowRejectConfirm(true);
-                setRejectError(null);
-              }}
-              className="text-sm font-medium text-red-600 hover:underline dark:text-red-400"
-            >
-              Reject this upload
-            </button>
-          ) : (
-            <div className="rounded-xl border border-red-200 bg-red-50 p-5 dark:border-red-900 dark:bg-red-950/40">
-              <p className="mb-1 text-sm font-semibold text-red-900 dark:text-red-200">
-                Reject this upload?
-              </p>
-              <p className="mb-4 text-sm text-red-800 dark:text-red-300">
-                This will permanently delete the{" "}
+      {/* ── Reject confirmation panel ── */}
+      {showRejectConfirm && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-5 dark:border-red-900 dark:bg-red-950/40">
+          <p className="mb-1 text-sm font-semibold text-red-900 dark:text-red-200">
+            Reject this upload?
+          </p>
+          <p className="mb-4 text-sm text-red-800 dark:text-red-300">
+            This will permanently delete all order data uploaded for{" "}
+            <strong>{summary.customerName}</strong> (service week{" "}
+            <strong>{summary.serviceDay}</strong>)
+            {(summary.linesInserted > 0 || summary.exceptionsInserted > 0) && (
+              <>
+                {" "}—{" "}
                 {summary.linesInserted > 0 && (
                   <>
                     <strong>{summary.linesInserted}</strong> order line
@@ -247,41 +254,40 @@ function UploadResultPanel({
                     <strong>{summary.exceptionsInserted}</strong> exception
                     {summary.exceptionsInserted !== 1 ? "s" : ""}
                   </>
-                )}{" "}
-                uploaded for <strong>{summary.customerName}</strong>. This
-                action cannot be undone.
-              </p>
+                )}
+              </>
+            )}
+            . This action cannot be undone.
+          </p>
 
-              {rejectError && (
-                <p className="mb-3 rounded-lg border border-red-300 bg-red-100 px-3 py-2 text-xs text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
-                  {rejectError}
-                </p>
-              )}
-
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={handleRejectConfirm}
-                  disabled={isRejecting}
-                  className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isRejecting ? "Rejecting…" : "Reject Upload"}
-                </button>
-                <button
-                  ref={cancelRejectRef}
-                  type="button"
-                  onClick={() => {
-                    setShowRejectConfirm(false);
-                    setRejectError(null);
-                  }}
-                  disabled={isRejecting}
-                  className="rounded-lg border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:bg-transparent dark:text-red-300 dark:hover:bg-red-950/40"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
+          {rejectError && (
+            <p className="mb-3 rounded-lg border border-red-300 bg-red-100 px-3 py-2 text-xs text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+              {rejectError}
+            </p>
           )}
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={handleRejectConfirm}
+              disabled={isRejecting}
+              className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isRejecting ? "Rejecting…" : "Confirm Reject Upload"}
+            </button>
+            <button
+              ref={cancelRejectRef}
+              type="button"
+              onClick={() => {
+                setShowRejectConfirm(false);
+                setRejectError(null);
+              }}
+              disabled={isRejecting}
+              className="rounded-lg border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:bg-transparent dark:text-red-300 dark:hover:bg-red-950/40"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
 
@@ -398,6 +404,9 @@ export default function UploadPage() {
         );
       }
 
+      if (process.env.NODE_ENV === "development") {
+        console.log("[upload] result:", data);
+      }
       setSummary(data as UploadSummary);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed.");
