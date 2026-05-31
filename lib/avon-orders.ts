@@ -26,6 +26,13 @@ export type ResolvedOrder = OrderRecord & {
   swallowName: string | null;
   // The normalised meal core (raw minus protein/swallow) the matcher compared.
   mealCore: string;
+  /**
+   * True when protein options exist for this order's day and customer, meaning
+   * every matched line is expected to carry a protein. When true and
+   * proteinName is null, persistUpload creates a "Protein not recognised"
+   * order_exception alongside the order_line.
+   */
+  proteinExpected: boolean;
 };
 
 export type MatchSummary = {
@@ -40,17 +47,38 @@ export type MatchSummary = {
     dayOfWeek: DayOfWeek;
     rawMealText: string;
     bestScore: number | null;
+    /** Omitted for "Meal not on menu". Set to "Protein not recognised" for protein exceptions. */
+    exceptionType?: string;
   }[];
 };
 
+export const PROTEIN_EXCEPTION_TYPE = "Protein not recognised" as const;
+
 export function buildMatchSummary(orders: ResolvedOrder[]): MatchSummary {
-  const exceptions = orders
+  // "Meal not on menu" exceptions — unmatched orders
+  const mealExceptions = orders
     .filter((order) => order.matchType === null)
     .map(({ employeeName, dayOfWeek, rawMealText, bestScore }) => ({
       employeeName,
       dayOfWeek,
       rawMealText,
       bestScore,
+    }));
+
+  // "Protein not recognised" exceptions — matched but missing protein
+  const proteinExceptions = orders
+    .filter(
+      (order) =>
+        order.matchType !== null &&
+        order.proteinExpected &&
+        order.proteinName === null,
+    )
+    .map(({ employeeName, dayOfWeek, rawMealText }) => ({
+      employeeName,
+      dayOfWeek,
+      rawMealText,
+      bestScore: null,
+      exceptionType: PROTEIN_EXCEPTION_TYPE,
     }));
 
   return {
@@ -60,7 +88,7 @@ export function buildMatchSummary(orders: ResolvedOrder[]): MatchSummary {
     matchedFuzzy: orders.filter((order) => order.matchType === "Fuzzy").length,
     proteinsCaptured: orders.filter((order) => order.proteinName !== null).length,
     swallowsCaptured: orders.filter((order) => order.swallowName !== null).length,
-    exceptions,
+    exceptions: [...mealExceptions, ...proteinExceptions],
   };
 }
 
@@ -96,6 +124,10 @@ export async function resolveOrders(
         .filter((s) => s.day_of_week === order.dayOfWeek)
         .map((s) => s.name);
 
+      // Protein is expected when the customer's menu has protein options for
+      // this day. A matched line without a protein will become an exception.
+      const proteinExpected = dayProteins.length > 0;
+
       const decomposed = decomposeMeal(
         order.rawMealText,
         dayProteins,
@@ -126,6 +158,7 @@ export async function resolveOrders(
           proteinName,
           swallowName,
           mealCore: mealRemainder,
+          proteinExpected,
         };
       }
 
@@ -139,6 +172,7 @@ export async function resolveOrders(
         proteinName,
         swallowName,
         mealCore: mealRemainder,
+        proteinExpected,
       };
     }),
   );
@@ -261,6 +295,26 @@ export async function persistUpload(params: {
         protein_name: order.proteinName,
         swallow_name: order.swallowName,
       });
+
+      // When protein is expected for this day but none was found, also create
+      // a "Protein not recognised" exception so the operator can resolve it
+      // through the Exceptions page (rather than seeing only a release blocker).
+      if (order.proteinExpected && order.proteinName === null) {
+        exceptionRows.push({
+          order_batch_id: batch.id,
+          customer_id: customerId,
+          service_day: serviceDay,
+          raw_value: order.rawMealText,
+          // For parsers with an explicit protein column, store the raw text so
+          // the operator can see what was provided; null for text-based extraction.
+          meal_core: order.proteinRaw ?? null,
+          employee_ref: order.employeeName,
+          exception_type: PROTEIN_EXCEPTION_TYPE,
+          suggested_item_id: null,
+          suggested_score: null,
+          status: "Open",
+        });
+      }
     } else {
       exceptionRows.push({
         order_batch_id: batch.id,

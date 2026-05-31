@@ -5,15 +5,19 @@ import { useSearchParams } from "next/navigation";
 import {
   countSimilarExceptions,
   fetchAllCustomers,
+  fetchAllProteinsForCustomer,
   fetchExceptions,
   fetchMenuItemsForServiceDay,
+  serviceDayToAvonDay,
   type BulkScope,
   type CustomerSummary,
   type ExceptionStatusFilter,
+  type MenuVocabItem,
   type OpenOrderException,
 } from "@/lib/avon-exceptions";
 import { DEFAULT_SERVICE_DAY, formatServiceDayLabel } from "@/lib/avon-dashboard";
 import { addCalendarDays } from "@/lib/calendar-date";
+import { PROTEIN_EXCEPTION_TYPE } from "@/lib/avon-orders";
 import type { AvonMenuItem } from "@/lib/avon-menu";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -92,6 +96,9 @@ function ExceptionsContent() {
   // ── Per-exception action state ────────────────────────────────────────────
   const [selectedMenuItemId, setSelectedMenuItemId] = useState<Record<string, string>>({});
   const [saveAsAlias, setSaveAsAlias] = useState<Record<string, boolean>>({});
+  // Protein state — populated when protein exceptions are loaded
+  const [allProteins, setAllProteins] = useState<MenuVocabItem[]>([]);
+  const [selectedProteinName, setSelectedProteinName] = useState<Record<string, string>>({});
   // Bulk-correction state
   const [applyToSimilar, setApplyToSimilar] = useState<Record<string, boolean>>({});
   const [similarScope, setSimilarScope] = useState<Record<string, BulkScope>>({});
@@ -150,6 +157,7 @@ function ExceptionsContent() {
         }
         setSelectedMenuItemId((prev) => ({ ...prev, ...initialSelection }));
         setSaveAsAlias({});
+        setSelectedProteinName({});
         setApplyToSimilar({});
         setSimilarScope({});
         setSimilarCount({});
@@ -213,16 +221,46 @@ function ExceptionsContent() {
           setSelectedMenuItemId((prev) => {
             const updated = { ...prev };
             for (const ex of exceptions) {
-              if (ex.status === "Open" && !updated[ex.id]) {
+              if (
+                ex.status === "Open" &&
+                ex.exception_type !== PROTEIN_EXCEPTION_TYPE &&
+                !updated[ex.id]
+              ) {
                 updated[ex.id] = data[0].id;
               }
             }
             return updated;
           });
         }
+
+        // Load all protein options for this customer so each protein exception
+        // can show the right day-filtered dropdown.
+        const proteins = await fetchAllProteinsForCustomer(
+          selectedCustomer.display_name,
+        );
+        if (!alive) return;
+        setAllProteins(proteins);
+
+        // Pre-select the first available protein for each open protein exception.
+        setSelectedProteinName((prev) => {
+          const updated = { ...prev };
+          for (const ex of exceptions) {
+            if (
+              ex.status === "Open" &&
+              ex.exception_type === PROTEIN_EXCEPTION_TYPE &&
+              !updated[ex.id]
+            ) {
+              const day = serviceDayToAvonDay(ex.service_day);
+              const firstForDay = proteins.find((p) => p.day_of_week === day);
+              if (firstForDay) updated[ex.id] = firstForDay.name;
+            }
+          }
+          return updated;
+        });
       } catch {
         if (!alive) return;
         setMenuItems([]);
+        setAllProteins([]);
       }
     };
 
@@ -279,14 +317,20 @@ function ExceptionsContent() {
     setError(null);
 
     try {
+      const isProteinException = ex.exception_type === PROTEIN_EXCEPTION_TYPE;
       const res = await fetch("/api/exceptions/resolve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           exceptionId: ex.id,
           action,
-          menuItemId: action === "map" ? selectedMenuItemId[ex.id] : undefined,
-          saveAsAlias: action === "map" ? (saveAsAlias[ex.id] ?? false) : false,
+          // For protein exceptions: pass proteinName. For meal exceptions: pass menuItemId.
+          ...(isProteinException
+            ? { proteinName: action === "map" ? selectedProteinName[ex.id] : undefined }
+            : {
+                menuItemId: action === "map" ? selectedMenuItemId[ex.id] : undefined,
+                saveAsAlias: action === "map" ? (saveAsAlias[ex.id] ?? false) : false,
+              }),
           applyToSimilar: isBulk,
           scope: isBulk ? (similarScope[ex.id] ?? "service_day") : "service_day",
         }),
@@ -445,6 +489,14 @@ function ExceptionsContent() {
               const suggestedPct = scorePercent(ex.suggested_score);
               const isResolving = resolvingId === ex.id;
               const isOpen = ex.status === "Open";
+              const isProtein = ex.exception_type === PROTEIN_EXCEPTION_TYPE;
+
+              // Proteins available for this exception's specific service day
+              const dayProteinsForEx = isProtein
+                ? allProteins.filter(
+                    (p) => p.day_of_week === serviceDayToAvonDay(ex.service_day),
+                  )
+                : [];
 
               const isBulk = applyToSimilar[ex.id] ?? false;
               const scope = similarScope[ex.id] ?? "service_day";
@@ -465,13 +517,30 @@ function ExceptionsContent() {
 
                   {/* Exception details */}
                   <div className="space-y-2 text-sm">
-                    <p className="font-medium text-zinc-900 dark:text-zinc-50">
-                      {ex.employee_ref}
-                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-medium text-zinc-900 dark:text-zinc-50">
+                        {ex.employee_ref}
+                      </p>
+                      {isProtein && (
+                        <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-700 dark:border-orange-800 dark:bg-orange-950/40 dark:text-orange-300">
+                          Protein not recognised
+                        </span>
+                      )}
+                    </div>
                     <p className="text-zinc-600 dark:text-zinc-400">
                       Raw: &quot;{ex.raw_value}&quot;
                     </p>
-                    {ex.suggested_item_id && (
+                    {/* For protein exceptions, show the raw protein text if captured */}
+                    {isProtein && ex.meal_core && (
+                      <p className="text-zinc-600 dark:text-zinc-400">
+                        Protein text: &quot;
+                        <span className="text-zinc-900 dark:text-zinc-50">
+                          {ex.meal_core}
+                        </span>
+                        &quot;
+                      </p>
+                    )}
+                    {!isProtein && ex.suggested_item_id && (
                       <p className="text-zinc-600 dark:text-zinc-400">
                         Suggested:{" "}
                         <span className="text-zinc-900 dark:text-zinc-50">
@@ -489,54 +558,89 @@ function ExceptionsContent() {
                   {/* Action controls — Open exceptions only */}
                   {isOpen && (
                     <>
-                      {/* Map dropdown */}
-                      <div className="mt-4">
-                        <label
-                          htmlFor={`menu-${ex.id}`}
-                          className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-                        >
-                          Map to menu item
-                        </label>
-                        <select
-                          id={`menu-${ex.id}`}
-                          value={selectedMenuItemId[ex.id] ?? ""}
-                          onChange={(e) =>
-                            setSelectedMenuItemId((curr) => ({
-                              ...curr,
-                              [ex.id]: e.target.value,
-                            }))
-                          }
-                          disabled={menuItems.length === 0 || isResolving}
-                          className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-                        >
-                          {menuItems.length === 0 ? (
-                            <option value="">No menu items for this day</option>
-                          ) : (
-                            menuItems.map((item) => (
-                              <option key={item.id} value={item.id}>
-                                {item.canonical_name}
-                              </option>
-                            ))
-                          )}
-                        </select>
-                      </div>
+                      {/* Map dropdown — protein or menu item */}
+                      {isProtein ? (
+                        <div className="mt-4">
+                          <label
+                            htmlFor={`protein-${ex.id}`}
+                            className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+                          >
+                            Select protein
+                          </label>
+                          <select
+                            id={`protein-${ex.id}`}
+                            value={selectedProteinName[ex.id] ?? ""}
+                            onChange={(e) =>
+                              setSelectedProteinName((curr) => ({
+                                ...curr,
+                                [ex.id]: e.target.value,
+                              }))
+                            }
+                            disabled={dayProteinsForEx.length === 0 || isResolving}
+                            className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+                          >
+                            {dayProteinsForEx.length === 0 ? (
+                              <option value="">No proteins for this day</option>
+                            ) : (
+                              dayProteinsForEx.map((p) => (
+                                <option key={p.name} value={p.name}>
+                                  {p.name}
+                                </option>
+                              ))
+                            )}
+                          </select>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="mt-4">
+                            <label
+                              htmlFor={`menu-${ex.id}`}
+                              className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+                            >
+                              Map to menu item
+                            </label>
+                            <select
+                              id={`menu-${ex.id}`}
+                              value={selectedMenuItemId[ex.id] ?? ""}
+                              onChange={(e) =>
+                                setSelectedMenuItemId((curr) => ({
+                                  ...curr,
+                                  [ex.id]: e.target.value,
+                                }))
+                              }
+                              disabled={menuItems.length === 0 || isResolving}
+                              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+                            >
+                              {menuItems.length === 0 ? (
+                                <option value="">No menu items for this day</option>
+                              ) : (
+                                menuItems.map((item) => (
+                                  <option key={item.id} value={item.id}>
+                                    {item.canonical_name}
+                                  </option>
+                                ))
+                              )}
+                            </select>
+                          </div>
 
-                      {/* Save as alias */}
-                      <label className="mt-3 flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
-                        <input
-                          type="checkbox"
-                          checked={saveAsAlias[ex.id] ?? false}
-                          onChange={(e) =>
-                            setSaveAsAlias((curr) => ({
-                              ...curr,
-                              [ex.id]: e.target.checked,
-                            }))
-                          }
-                          disabled={isResolving}
-                          className="rounded border-zinc-300 dark:border-zinc-600"
-                        />
-                        Save as alias
-                      </label>
+                          {/* Save as alias (meal exceptions only) */}
+                          <label className="mt-3 flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
+                            <input
+                              type="checkbox"
+                              checked={saveAsAlias[ex.id] ?? false}
+                              onChange={(e) =>
+                                setSaveAsAlias((curr) => ({
+                                  ...curr,
+                                  [ex.id]: e.target.checked,
+                                }))
+                              }
+                              disabled={isResolving}
+                              className="rounded border-zinc-300 dark:border-zinc-600"
+                            />
+                            Save as alias
+                          </label>
+                        </>
+                      )}
 
                       {/* ── Bulk-correction option ─────────────────────────── */}
                       <div className="mt-3 rounded-lg border border-zinc-100 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/50">
@@ -626,11 +730,16 @@ function ExceptionsContent() {
                       <div className="mt-4 flex flex-wrap gap-2">
                         <button
                           type="button"
-                          disabled={isResolving || !selectedMenuItemId[ex.id]}
+                          disabled={
+                            isResolving ||
+                            (isProtein
+                              ? !selectedProteinName[ex.id]
+                              : !selectedMenuItemId[ex.id])
+                          }
                           onClick={() => handleResolve(ex, "map")}
                           className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
                         >
-                          {isResolving ? "Saving…" : "Map"}
+                          {isResolving ? "Saving…" : isProtein ? "Assign Protein" : "Map"}
                         </button>
                         <button
                           type="button"

@@ -1,5 +1,6 @@
 import { getAppSession } from "@/lib/auth";
 import { normalize } from "@/lib/matchMeal";
+import { PROTEIN_EXCEPTION_TYPE } from "@/lib/avon-orders";
 import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 
@@ -10,6 +11,8 @@ type ResolveBody = {
   exceptionId?: string;
   action?: ResolveAction;
   menuItemId?: string;
+  /** For "Protein not recognised" exceptions — the canonical protein name to assign. */
+  proteinName?: string;
   saveAsAlias?: boolean;
   /** If true, apply the same correction to all similar Open exceptions. */
   applyToSimilar?: boolean;
@@ -23,6 +26,7 @@ async function resolveOne(params: {
   exceptionId: string;
   action: ResolveAction;
   menuItemId?: string;
+  proteinName?: string;
   resolvedAt: string;
   bulkApplied: boolean;
   sourceExceptionId: string | null;
@@ -34,18 +38,68 @@ async function resolveOne(params: {
     raw_value: string;
     employee_ref: string;
     meal_core: string | null;
+    exception_type: string;
   };
 }): Promise<void> {
   const {
     exceptionId,
     action,
     menuItemId,
+    proteinName,
     resolvedAt,
     bulkApplied,
     sourceExceptionId,
     exception,
   } = params;
 
+  // ── Protein-exception path: update the existing order_line, never insert ──
+  if (exception.exception_type === PROTEIN_EXCEPTION_TYPE) {
+    // Find the order_line that corresponds to this exception by batch + employee + day.
+    const { data: orderLine, error: lineErr } = await supabase
+      .from("order_line")
+      .select("id")
+      .eq("order_batch_id", exception.order_batch_id)
+      .eq("customer_id", exception.customer_id)
+      .eq("service_day", exception.service_day)
+      .eq("employee_ref", exception.employee_ref)
+      .maybeSingle();
+
+    if (lineErr)
+      throw new Error(`Failed to find order line for protein exception: ${lineErr.message}`);
+
+    if (orderLine) {
+      // "map" → set the chosen protein. "drop" / "accept" → sentinel so Guard 4
+      // (protein_name IS NULL) clears without requiring a real protein value.
+      const newProteinName =
+        action === "map" && proteinName ? proteinName : "(No protein)";
+
+      const { error: updateErr } = await supabase
+        .from("order_line")
+        .update({ protein_name: newProteinName })
+        .eq("id", orderLine.id);
+
+      if (updateErr)
+        throw new Error(`Failed to update protein on order line: ${updateErr.message}`);
+    }
+
+    // Mark the exception resolved/accepted
+    const newStatus = action === "accept" ? "AcceptedAsIs" : "Resolved";
+    const { error: exErr } = await supabase
+      .from("order_exception")
+      .update({
+        status: newStatus,
+        resolved_by: "operator",
+        resolved_at: resolvedAt,
+        bulk_applied: bulkApplied,
+        source_exception_id: sourceExceptionId,
+      })
+      .eq("id", exceptionId);
+
+    if (exErr) throw new Error(`Failed to resolve exception: ${exErr.message}`);
+    return;
+  }
+
+  // ── Standard meal-exception path ──────────────────────────────────────────
   if (action === "map") {
     if (!menuItemId) throw new Error("menuItemId is required for Map action.");
 
@@ -118,6 +172,7 @@ export async function POST(request: Request) {
       exceptionId,
       action,
       menuItemId,
+      proteinName,
       saveAsAlias = false,
       applyToSimilar = false,
       scope = "service_day",
@@ -133,9 +188,9 @@ export async function POST(request: Request) {
     if (!["map", "drop", "accept"].includes(action)) {
       return NextResponse.json({ error: "Invalid action." }, { status: 400 });
     }
-    if (action === "map" && !menuItemId) {
+    if (action === "map" && !menuItemId && !proteinName) {
       return NextResponse.json(
-        { error: "menuItemId is required for Map." },
+        { error: "menuItemId (or proteinName for protein exceptions) is required for Map." },
         { status: 400 },
       );
     }
@@ -167,10 +222,19 @@ export async function POST(request: Request) {
       exceptionId,
       action,
       menuItemId,
+      proteinName,
       resolvedAt,
       bulkApplied: false,
       sourceExceptionId: null,
-      exception,
+      exception: {
+        order_batch_id: exception.order_batch_id,
+        customer_id: exception.customer_id,
+        service_day: exception.service_day,
+        raw_value: exception.raw_value,
+        employee_ref: exception.employee_ref,
+        meal_core: exception.meal_core,
+        exception_type: exception.exception_type as string,
+      },
     });
 
     let affected = 1;
@@ -202,7 +266,7 @@ export async function POST(request: Request) {
       //   • (when scope = "service_day") same service_day
       let similarQuery = supabase
         .from("order_exception")
-        .select("id, order_batch_id, customer_id, service_day, raw_value, employee_ref, meal_core")
+        .select("id, order_batch_id, customer_id, service_day, raw_value, employee_ref, meal_core, exception_type")
         .eq("customer_id", exception.customer_id)
         .eq("exception_type", exception.exception_type)
         .eq("raw_value", exception.raw_value)
@@ -225,6 +289,7 @@ export async function POST(request: Request) {
           exceptionId: sim.id,
           action,
           menuItemId,
+          proteinName,
           resolvedAt,
           bulkApplied: true,
           sourceExceptionId: exceptionId,
@@ -235,6 +300,7 @@ export async function POST(request: Request) {
             raw_value: sim.raw_value,
             employee_ref: sim.employee_ref,
             meal_core: sim.meal_core,
+            exception_type: sim.exception_type as string,
           },
         });
         affected += 1;

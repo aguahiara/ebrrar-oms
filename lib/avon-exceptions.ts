@@ -1,6 +1,7 @@
 import { parseCalendarDate, addCalendarDays } from "@/lib/calendar-date";
-import type { AvonMenuItem } from "@/lib/avon-menu";
-import { fetchMenuItems } from "@/lib/avon-menu";
+import type { AvonMenuItem, MenuVocabItem } from "@/lib/avon-menu";
+export type { MenuVocabItem };
+import { fetchMenuItems, fetchProteins } from "@/lib/avon-menu";
 import type { DayOfWeek } from "@/lib/order-types";
 import { supabase } from "@/lib/supabase";
 
@@ -189,6 +190,17 @@ export async function fetchMenuItemsForServiceDay(
   if (!day) return [];
   const items = await fetchMenuItems(customerDisplayName);
   return items.filter((item) => item.day_of_week === day);
+}
+
+/**
+ * All protein vocabulary entries for a customer (all days).
+ * The caller can filter by day_of_week as needed.
+ * Re-exported here so the exceptions page has a single import point.
+ */
+export async function fetchAllProteinsForCustomer(
+  customerDisplayName: string,
+): Promise<MenuVocabItem[]> {
+  return fetchProteins(customerDisplayName);
 }
 
 // ─── Legacy exports (AVON-specific, kept for backward compatibility) ──────────

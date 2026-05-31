@@ -19,6 +19,7 @@ type UploadSummary = {
     dayOfWeek: string;
     rawMealText: string;
     bestScore: number | null;
+    exceptionType?: string;
   }[];
   // From persistUpload
   batchId: string;
@@ -322,11 +323,15 @@ function UploadResultPanel({
                     &ldquo;{item.rawMealText}&rdquo;
                   </p>
                 </div>
-                {item.bestScore !== null && (
+                {item.exceptionType === "Protein not recognised" ? (
+                  <span className="shrink-0 rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs text-orange-700 dark:border-orange-800 dark:bg-orange-950/40 dark:text-orange-300">
+                    Protein
+                  </span>
+                ) : item.bestScore !== null ? (
                   <span className="shrink-0 rounded-full bg-zinc-100 px-2 py-0.5 text-xs tabular-nums text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
                     {Math.round(item.bestScore * 100)}% match
                   </span>
-                )}
+                ) : null}
               </li>
             ))}
           </ul>
