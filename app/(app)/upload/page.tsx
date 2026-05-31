@@ -2,7 +2,7 @@
 
 import { mondayOfCurrentWeek } from "@/lib/calendar-date";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -21,6 +21,7 @@ type UploadSummary = {
     bestScore: number | null;
   }[];
   // From persistUpload
+  batchId: string;
   linesInserted: number;
   exceptionsInserted: number;
   duplicatesSkipped: number;
@@ -73,6 +74,31 @@ function UploadResultPanel({
   const previewExceptions = summary.exceptions.slice(0, 10);
   const exceptionsUrl = `/exceptions?customerId=${summary.customerId}&serviceWeekStart=${summary.serviceDay}`;
   const dashboardUrl = `/dashboard?date=${summary.serviceDay}`;
+
+  // ── Reject-upload state ───────────────────────────────────────────────────
+  const [showRejectConfirm, setShowRejectConfirm] = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
+  const [rejectError, setRejectError] = useState<string | null>(null);
+  const cancelRejectRef = useRef<HTMLButtonElement>(null);
+
+  async function handleRejectConfirm() {
+    setIsRejecting(true);
+    setRejectError(null);
+    try {
+      const res = await fetch("/api/upload/reject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchId: summary.batchId }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok) throw new Error(data.error ?? "Rejection failed.");
+      // On success, reset the whole upload form so the user can re-upload
+      onUploadAnother();
+    } catch (err) {
+      setRejectError(err instanceof Error ? err.message : "Rejection failed.");
+      setIsRejecting(false);
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -187,6 +213,77 @@ function UploadResultPanel({
           Upload Another File
         </button>
       </div>
+
+      {/* ── Reject upload ── */}
+      {(summary.linesInserted > 0 || summary.exceptionsInserted > 0) && (
+        <div className="border-t border-zinc-100 pt-4 dark:border-zinc-800">
+          {!showRejectConfirm ? (
+            <button
+              type="button"
+              onClick={() => {
+                setShowRejectConfirm(true);
+                setRejectError(null);
+              }}
+              className="text-sm font-medium text-red-600 hover:underline dark:text-red-400"
+            >
+              Reject this upload
+            </button>
+          ) : (
+            <div className="rounded-xl border border-red-200 bg-red-50 p-5 dark:border-red-900 dark:bg-red-950/40">
+              <p className="mb-1 text-sm font-semibold text-red-900 dark:text-red-200">
+                Reject this upload?
+              </p>
+              <p className="mb-4 text-sm text-red-800 dark:text-red-300">
+                This will permanently delete the{" "}
+                {summary.linesInserted > 0 && (
+                  <>
+                    <strong>{summary.linesInserted}</strong> order line
+                    {summary.linesInserted !== 1 ? "s" : ""}
+                    {summary.exceptionsInserted > 0 ? " and " : ""}
+                  </>
+                )}
+                {summary.exceptionsInserted > 0 && (
+                  <>
+                    <strong>{summary.exceptionsInserted}</strong> exception
+                    {summary.exceptionsInserted !== 1 ? "s" : ""}
+                  </>
+                )}{" "}
+                uploaded for <strong>{summary.customerName}</strong>. This
+                action cannot be undone.
+              </p>
+
+              {rejectError && (
+                <p className="mb-3 rounded-lg border border-red-300 bg-red-100 px-3 py-2 text-xs text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
+                  {rejectError}
+                </p>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleRejectConfirm}
+                  disabled={isRejecting}
+                  className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isRejecting ? "Rejecting…" : "Reject Upload"}
+                </button>
+                <button
+                  ref={cancelRejectRef}
+                  type="button"
+                  onClick={() => {
+                    setShowRejectConfirm(false);
+                    setRejectError(null);
+                  }}
+                  disabled={isRejecting}
+                  className="rounded-lg border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:bg-transparent dark:text-red-300 dark:hover:bg-red-950/40"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Exception preview ── */}
       {hasExceptions && previewExceptions.length > 0 && (

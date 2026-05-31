@@ -314,3 +314,76 @@ export async function persistUpload(params: {
     duplicatesSkipped,
   };
 }
+
+/**
+ * Reject (hard-delete) a specific upload batch.
+ *
+ * Deletes all order_line and order_exception rows that belong to this batch,
+ * then deletes the batch record itself.  Throws if an active (non-revoked)
+ * dashboard_release exists for the same customer + service day — the release
+ * must be revoked first before the underlying data can be discarded.
+ */
+export async function rejectUploadBatch(batchId: string): Promise<{
+  linesDeleted: number;
+  exceptionsDeleted: number;
+}> {
+  // ── 1. Fetch batch metadata ────────────────────────────────────────────────
+  const { data: batch, error: batchErr } = await supabase
+    .from("order_batch")
+    .select("id, customer_id, service_day")
+    .eq("id", batchId)
+    .maybeSingle();
+
+  if (batchErr) throw new Error(`Failed to load batch: ${batchErr.message}`);
+  if (!batch) throw new Error("Upload batch not found.");
+
+  // ── 2. Guard: block if the batch has already been released ─────────────────
+  const { data: activeRelease } = await supabase
+    .from("dashboard_release")
+    .select("id")
+    .eq("customer_id", batch.customer_id)
+    .eq("service_day", batch.service_day)
+    .is("revoked_at", null)
+    .maybeSingle();
+
+  if (activeRelease) {
+    throw new Error(
+      "This upload has already been released for production. " +
+        "Revoke the release first, then reject the upload.",
+    );
+  }
+
+  // ── 3. Delete order lines belonging to this batch ──────────────────────────
+  const { data: deletedLines, error: linesErr } = await supabase
+    .from("order_line")
+    .delete()
+    .eq("order_batch_id", batchId)
+    .select("id");
+
+  if (linesErr)
+    throw new Error(`Failed to delete order lines: ${linesErr.message}`);
+
+  // ── 4. Delete exceptions belonging to this batch ───────────────────────────
+  const { data: deletedExceptions, error: exceptionsErr } = await supabase
+    .from("order_exception")
+    .delete()
+    .eq("order_batch_id", batchId)
+    .select("id");
+
+  if (exceptionsErr)
+    throw new Error(`Failed to delete exceptions: ${exceptionsErr.message}`);
+
+  // ── 5. Delete the batch record itself ──────────────────────────────────────
+  const { error: batchDeleteErr } = await supabase
+    .from("order_batch")
+    .delete()
+    .eq("id", batchId);
+
+  if (batchDeleteErr)
+    throw new Error(`Failed to delete batch: ${batchDeleteErr.message}`);
+
+  return {
+    linesDeleted: deletedLines?.length ?? 0,
+    exceptionsDeleted: deletedExceptions?.length ?? 0,
+  };
+}

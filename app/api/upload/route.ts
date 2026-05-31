@@ -75,7 +75,7 @@ export async function POST(request: Request) {
       proteins,
       swallows,
     );
-    const { linesInserted, exceptionsInserted, duplicatesSkipped } =
+    const { batchId, linesInserted, exceptionsInserted, duplicatesSkipped } =
       await persistUpload({
         customerDisplayName: customer,
         serviceDay,
@@ -86,6 +86,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       ...summary,
+      batchId,
       linesInserted,
       exceptionsInserted,
       duplicatesSkipped,
