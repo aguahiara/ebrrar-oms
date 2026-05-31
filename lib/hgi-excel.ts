@@ -3,6 +3,9 @@ import * as XLSX from "xlsx";
 
 const SHEET_NAME = "Sheet1";
 
+/** How many rows from the top we search for the header row. */
+const MAX_HEADER_SCAN_ROWS = 10;
+
 const WEEKDAY_HEADER_PATTERNS: { pattern: string; day: DayOfWeek }[] = [
   { pattern: "MONDAY", day: "Mon" },
   { pattern: "TUESDAY", day: "Tue" },
@@ -13,7 +16,7 @@ const WEEKDAY_HEADER_PATTERNS: { pattern: string; day: DayOfWeek }[] = [
 
 function headerText(value: unknown): string {
   return String(value ?? "")
-    .replace(/\u00a0/g, " ")
+    .replace(/ /g, " ")
     .trim();
 }
 
@@ -32,14 +35,16 @@ function isSkippedMeal(value: string): boolean {
   return value.toLowerCase() === "not applicable";
 }
 
+/**
+ * Returns the index of the Name column within a candidate header row.
+ * Accepts any cell whose text (lowercased, trimmed) contains "name"
+ * so that "Employee Name", "Full Name", "Staff Name", etc. all match.
+ * Returns -1 if no such cell exists.
+ */
 function findNameColumnIndex(headerRow: unknown[]): number {
-  const index = headerRow.findIndex(
-    (cell) => headerText(cell).toLowerCase() === "name",
+  return headerRow.findIndex((cell) =>
+    headerText(cell).toLowerCase().includes("name"),
   );
-  if (index === -1) {
-    throw new Error('Missing required header column "Name".');
-  }
-  return index;
 }
 
 function findWeekdayColumns(
@@ -61,13 +66,43 @@ function findWeekdayColumns(
     }
   }
 
-  if (columns.length === 0) {
-    throw new Error(
-      "No weekday columns found (expected headers containing MONDAY–FRIDAY).",
-    );
+  return columns;
+}
+
+/**
+ * Scans the first MAX_HEADER_SCAN_ROWS rows to find the header row.
+ *
+ * A row qualifies as a header if it contains:
+ *   • at least one cell whose text includes "name" (the employee name column), AND
+ *   • at least one cell whose text includes a weekday name (Mon–Fri).
+ *
+ * This handles HLA files that have title rows, blank rows, or metadata rows
+ * above the actual column header row.
+ *
+ * Returns { headerRowIndex, headerRow } or throws if no header row is found.
+ */
+function findHeaderRow(rows: unknown[][]): {
+  headerRowIndex: number;
+  headerRow: unknown[];
+} {
+  const scanLimit = Math.min(rows.length, MAX_HEADER_SCAN_ROWS);
+
+  for (let i = 0; i < scanLimit; i++) {
+    const row = rows[i];
+    const hasNameCol = findNameColumnIndex(row) !== -1;
+    const hasWeekdayCol = findWeekdayColumns(row).length > 0;
+
+    if (hasNameCol && hasWeekdayCol) {
+      return { headerRowIndex: i, headerRow: row };
+    }
   }
 
-  return columns;
+  throw new Error(
+    `Could not find the header row in Sheet1 (scanned the first ${scanLimit} rows). ` +
+      `Expected a row containing a "Name" column and at least one weekday column ` +
+      `(Monday–Friday). Check that the file is using Sheet1 and that the column ` +
+      `headers are spelled correctly.`,
+  );
 }
 
 export function parseHgiExcel(buffer: Buffer): OrderRecord[] {
@@ -93,13 +128,13 @@ export function parseHgiExcel(buffer: Buffer): OrderRecord[] {
     throw new Error(`Sheet "${SHEET_NAME}" is empty.`);
   }
 
-  const headerRow = rows[0];
+  const { headerRowIndex, headerRow } = findHeaderRow(rows);
   const nameIndex = findNameColumnIndex(headerRow);
   const weekdayColumns = findWeekdayColumns(headerRow);
 
   const records: OrderRecord[] = [];
 
-  for (const row of rows.slice(1)) {
+  for (const row of rows.slice(headerRowIndex + 1)) {
     const employeeName = cellText(row[nameIndex]);
     if (!employeeName) {
       continue;
