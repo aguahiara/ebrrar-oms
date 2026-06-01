@@ -18,6 +18,11 @@ type UploadSummary = {
   /** Orders where an unrecognised add-on (side dish) was captured. */
   sidesCaptured?: number;
   acceptedNoProteinCount?: number;
+  /**
+   * Rows identified as no-lunch entries ("NO LUNCH REQUIRED", "nil", "N/A",
+   * etc.) that were silently skipped — no order_line, no exception created.
+   */
+  noLunchCount?: number;
   exceptions: {
     employeeName: string;
     dayOfWeek: string;
@@ -193,6 +198,15 @@ function UploadResultPanel({
             </p>
           )}
         </div>
+      )}
+
+      {/* ── No-lunch skipped notice ── */}
+      {(summary.noLunchCount ?? 0) > 0 && (
+        <p className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+          <strong>{summary.noLunchCount}</strong> no-lunch entr
+          {summary.noLunchCount !== 1 ? "ies" : "y"} skipped — those employees
+          indicated they do not require a meal today.
+        </p>
       )}
 
       {/* ── Duplicates notice ── */}

@@ -1,7 +1,7 @@
 import { addCalendarDays } from "@/lib/calendar-date";
 import { canonicalizeVocab, decomposeMeal } from "@/lib/decompose";
 import { matchMeal, type MenuItemAliasForMatch } from "@/lib/matchMeal";
-import { parseOrderText } from "@/lib/parse-order";
+import { isNoLunchEntry, parseOrderText } from "@/lib/parse-order";
 import type { AvonMenuItem, MenuVocabItem } from "@/lib/avon-menu";
 import type { DayOfWeek, OrderRecord } from "@/lib/order-types";
 import { supabase } from "@/lib/supabase";
@@ -16,7 +16,7 @@ const WEEKDAY_OFFSET: Record<DayOfWeek, number> = {
 
 export type ResolvedOrder = OrderRecord & {
   menuItemId: string | null;
-  matchType: "Direct" | "Alias" | "Fuzzy" | "FruitsOnly" | null;
+  matchType: "Direct" | "Alias" | "Fuzzy" | "FruitsOnly" | "NoLunch" | null;
   // Populated only for Fuzzy matches (the similarity score that cleared the threshold).
   matchScore: number | null;
   // Populated only when unmatched: the best fuzzy guess + score, surfaced on the exception.
@@ -56,6 +56,12 @@ export type MatchSummary = {
   matchedFuzzy: number;
   /** Orders auto-accepted as "Fruits Only" (no menu match required). */
   fruitsOnlyCount: number;
+  /**
+   * Rows that were identified as no-lunch entries ("NO LUNCH REQUIRED", "nil",
+   * "N/A", etc.) and silently skipped — no order_line, no exception, not
+   * counted in totalOrders (Business Rule §1b).
+   */
+  noLunchCount: number;
   proteinsCaptured: number;
   swallowsCaptured: number;
   /**
@@ -113,9 +119,14 @@ export function isFruitsOnly(text: string): boolean {
 }
 
 export function buildMatchSummary(orders: ResolvedOrder[]): MatchSummary {
+  // Separate no-lunch entries from real orders.  No-lunch rows are not counted
+  // in totalOrders and never contribute to exceptions (Business Rule §1b).
+  const noLunchOrders = orders.filter((o) => o.matchType === "NoLunch");
+  const mealOrders    = orders.filter((o) => o.matchType !== "NoLunch");
+
   // "Meal not on menu" exceptions — truly unmatched orders (matchType === null)
   // FruitsOnly orders are NOT in this list; they are auto-accepted.
-  const mealExceptions = orders
+  const mealExceptions = mealOrders
     .filter((order) => order.matchType === null)
     .map(({ employeeName, dayOfWeek, rawMealText, bestScore }) => ({
       employeeName,
@@ -125,7 +136,7 @@ export function buildMatchSummary(orders: ResolvedOrder[]): MatchSummary {
     }));
 
   // "Protein not recognised" exceptions — matched but missing protein.
-  const proteinExceptions = orders
+  const proteinExceptions = mealOrders
     .filter(
       (order) =>
         order.matchType !== null &&
@@ -143,7 +154,7 @@ export function buildMatchSummary(orders: ResolvedOrder[]): MatchSummary {
     }));
 
   // Orders accepted with no protein because protein is not required.
-  const acceptedNoProteinCount = orders.filter(
+  const acceptedNoProteinCount = mealOrders.filter(
     (order) =>
       order.matchType !== null &&
       order.matchType !== "FruitsOnly" &&
@@ -153,14 +164,15 @@ export function buildMatchSummary(orders: ResolvedOrder[]): MatchSummary {
   ).length;
 
   return {
-    totalOrders: orders.length,
-    matchedDirect: orders.filter((o) => o.matchType === "Direct").length,
-    matchedAlias:  orders.filter((o) => o.matchType === "Alias").length,
-    matchedFuzzy:  orders.filter((o) => o.matchType === "Fuzzy").length,
-    fruitsOnlyCount: orders.filter((o) => o.matchType === "FruitsOnly").length,
-    proteinsCaptured: orders.filter((o) => o.proteinName !== null).length,
-    swallowsCaptured: orders.filter((o) => o.swallowName !== null).length,
-    sidesCaptured: orders.filter((o) => (o.sideItems?.length ?? 0) > 0).length,
+    totalOrders:     mealOrders.length,
+    noLunchCount:    noLunchOrders.length,
+    matchedDirect:   mealOrders.filter((o) => o.matchType === "Direct").length,
+    matchedAlias:    mealOrders.filter((o) => o.matchType === "Alias").length,
+    matchedFuzzy:    mealOrders.filter((o) => o.matchType === "Fuzzy").length,
+    fruitsOnlyCount: mealOrders.filter((o) => o.matchType === "FruitsOnly").length,
+    proteinsCaptured: mealOrders.filter((o) => o.proteinName !== null).length,
+    swallowsCaptured: mealOrders.filter((o) => o.swallowName !== null).length,
+    sidesCaptured:   mealOrders.filter((o) => (o.sideItems?.length ?? 0) > 0).length,
     acceptedNoProteinCount,
     exceptions: [...mealExceptions, ...proteinExceptions],
   };
@@ -206,6 +218,32 @@ export async function resolveOrders(
       // Protein is expected when the customer's menu has protein options for
       // this day. A matched line without a required protein will become an exception.
       const proteinExpected = dayProteins.length > 0;
+
+      // ── Step 0: detect no-lunch entries ("NO LUNCH REQUIRED", "nil", "N/A") ──
+      // Must run before any decomposition or matching.  No order_line, no
+      // exception, not counted in production (Business Rule §1b).
+      if (isNoLunchEntry(order.rawMealText)) {
+        if (process.env.NODE_ENV === "development") {
+          console.log("[resolveOrders] NoLunch (skipped)", {
+            employee: order.employeeName,
+            raw: order.rawMealText,
+          });
+        }
+        return {
+          ...order,
+          menuItemId: null,
+          matchType: "NoLunch" as const,
+          matchScore: null,
+          bestGuessId: null,
+          bestScore: null,
+          proteinName: null,
+          swallowName: null,
+          sideItems: [],
+          mealCore: order.rawMealText,
+          proteinExpected: false,
+          proteinRequirement: null,
+        };
+      }
 
       // ── Step 0a: detect "Fruits Only" on the raw text (pre-decompose) ──────
       // We check here first because the raw text is unambiguous.
@@ -447,6 +485,10 @@ export async function persistUpload(params: {
   let duplicatesSkipped = 0;
 
   for (const order of params.orders) {
+    // No-lunch entries must be silently dropped — they produce no order_line,
+    // no exception, and do not affect the duplicate-detection set.
+    if (order.matchType === "NoLunch") continue;
+
     const serviceDay = lineServiceDay(params.serviceDay, order.dayOfWeek);
     const key = dedupKey(order.employeeName, serviceDay);
     if (seen.has(key)) {

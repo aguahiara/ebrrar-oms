@@ -17,6 +17,12 @@
  *   §11 — Generic swallow phrases ("with swallow", "+ swallow", etc.) are
  *          classified as GENERIC_SWALLOW_VALUE ("Not Selected") instead of
  *          being dropped as unrecognised sides.
+ *   §1b — No-lunch entries ("NO LUNCH REQUIRED", "nil", "N/A", etc.) are
+ *          detected and must be skipped with no order_line or exception.
+ *   §3  — Add-on tokens after the main-meal separator are also split on `+`
+ *          so that "Okro Soup + Eba + Fish" yields three separate parts.
+ *   §5  — Protein aliases: "assorted" → "Assorted Meat", "goat" → "Goat Meat",
+ *          "cow meat" → "Beef", "boiled egg" → "Egg", etc.
  */
 
 // ── Separator patterns ────────────────────────────────────────────────────────
@@ -31,9 +37,56 @@ const PRIMARY_SEP_RE = /\s*\+\s*|\s+with\s+/i;
  * Secondary separator: `and` (case-insensitive, surrounded by required
  * whitespace so it is not matched inside a word).
  * Used as the primary separator only when no `+` or `with` is present.
- * Always used to split multiple add-ons within the add-on portion.
  */
 const AND_SEP_RE = /\s+and\s+/gi;
+
+/**
+ * Used to split the add-on portion into individual tokens.
+ * Both `+` and `and` act as add-on separators.  `with` is intentionally
+ * excluded here because it is consumed as the primary separator already.
+ *
+ * Handles: "Eba + Fish" → ["Eba","Fish"]
+ *          "Semo and Beef" → ["Semo","Beef"]
+ *          "Eba + Fish and Beef" → ["Eba","Fish","Beef"]
+ */
+const ADDON_SEP_RE = /\s*\+\s*|\s+and\s+/gi;
+
+// ── No-lunch / skip detection ─────────────────────────────────────────────────
+
+/**
+ * Lower-cased, whitespace-collapsed phrases that mean the employee does not
+ * want a meal on this day.  When the ENTIRE order text normalises to one of
+ * these values the row must be silently skipped — no order_line, no exception,
+ * no production count (Business Rule §1b).
+ */
+const NO_LUNCH_PHRASES: ReadonlySet<string> = new Set([
+  "no lunch required",
+  "no lunch",
+  "no lunch today",
+  "lunch not required",
+  "no meal",
+  "no meal required",
+  "no meal today",
+  "no food",
+  "not eating",
+  "none",
+  "nil",
+  "n/a",
+  "na",
+]);
+
+/**
+ * Return true when the raw order text represents a "no meal today" entry that
+ * must be silently skipped.
+ *
+ * Detection is against the full normalised string (lowercase, collapsed
+ * whitespace) so it does NOT fire for legitimate meal names that merely happen
+ * to contain words like "no" or "none" inside a longer phrase.
+ */
+export function isNoLunchEntry(text: string): boolean {
+  const normalized = text.toLowerCase().trim().replace(/\s+/g, " ");
+  return NO_LUNCH_PHRASES.has(normalized);
+}
 
 // ── Generic swallow detection ─────────────────────────────────────────────────
 
@@ -148,10 +201,13 @@ export function parseOrderText(text: string): ParsedOrderText {
     }
   }
 
-  // ── Split add-on portion further on `and` ─────────────────────────────────
-  AND_SEP_RE.lastIndex = 0;
+  // ── Split add-on portion on `+` and `and` ────────────────────────────────
+  // Using ADDON_SEP_RE (not AND_SEP_RE) so that "Eba + Fish" and "Semo and
+  // Beef" each yield two tokens.  `with` is intentionally excluded here
+  // because it is already consumed as the primary separator above.
+  ADDON_SEP_RE.lastIndex = 0;
   const addOns = restRaw
-    ? restRaw.split(AND_SEP_RE).map((s) => s.trim()).filter(Boolean)
+    ? restRaw.split(ADDON_SEP_RE).map((s) => s.trim()).filter(Boolean)
     : [];
 
   return { mainMeal: mainRaw, addOns, hasSeparator: true };
@@ -184,6 +240,53 @@ export function normalizeMainMeal(text: string): string {
     .replace(MAIN_MEAL_PUNCT_RE, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+// ── Protein alias normalization ───────────────────────────────────────────────
+
+/**
+ * Maps lower-cased protein abbreviations / alternate customer-written forms to
+ * the canonical name that the vocabulary is expected to contain.
+ *
+ * Applied in classifyAddOns before the vocabulary lookup so that tokens like
+ * "assorted" and "goat" resolve against "Assorted Meat" / "Goat Meat" in the
+ * menu, and "cow meat" or "boiled egg" map to the right canonical entry.
+ *
+ * Keys MUST be lower-cased.  Values are the expected canonical menu name.
+ */
+const PROTEIN_ALIAS_MAP: Readonly<Record<string, string>> = {
+  // Abbreviated names that expand to a longer vocabulary entry
+  "assorted":           "Assorted Meat",
+  "assorted meat":      "Assorted Meat",
+  "assorted meats":     "Assorted Meat",
+  "goat":               "Goat Meat",
+  // Renamed / equivalent forms
+  "cow meat":           "Beef",
+  "cowmeat":            "Beef",
+  "cow":                "Beef",
+  // Egg variants
+  "boiled egg":         "Egg",
+  "fried egg":          "Egg",
+  "hard boiled egg":    "Egg",
+  "scrambled egg":      "Egg",
+  "egg (boiled)":       "Egg",
+  "egg (fried)":        "Egg",
+  "egg (scrambled)":    "Egg",
+};
+
+/**
+ * Apply the protein alias map to a lower-cased token.  Returns the lower-cased
+ * canonical name if an alias matches, otherwise returns the original token.
+ *
+ * Tries exact match first, then a starts-with match so that annotated tokens
+ * such as "assorted (large)" also resolve to the aliased form.
+ */
+export function resolveProteinAlias(lower: string): string {
+  if (PROTEIN_ALIAS_MAP[lower]) return PROTEIN_ALIAS_MAP[lower].toLowerCase();
+  for (const [key, canonical] of Object.entries(PROTEIN_ALIAS_MAP)) {
+    if (lower.startsWith(key + " ")) return canonical.toLowerCase();
+  }
+  return lower;
 }
 
 // ── Add-on classification ─────────────────────────────────────────────────────
@@ -269,16 +372,29 @@ export function classifyAddOns(
 
     // ── Protein check ───────────────────────────────────────────────────────
     if (!proteinName) {
-      // Exact match
-      const exactProtein = proteinMap.get(lower);
+      // Step 1 — alias normalization: resolve abbreviated / renamed forms
+      //   "assorted" → "assorted meat",  "goat" → "goat meat",
+      //   "cow meat" → "beef",            "boiled egg" → "egg"
+      const aliasedLower = resolveProteinAlias(lower);
+
+      // Step 2 — exact match (alias-resolved key first, then original)
+      const exactProtein =
+        proteinMap.get(aliasedLower) ?? proteinMap.get(lower);
       if (exactProtein) {
         proteinName = exactProtein;
         continue;
       }
-      // Partial / starts-with (handles "Chicken (2 pieces)", "Goat meat stew")
+
+      // Step 3 — starts-with match: token begins with a vocab item (handles
+      //   "Chicken (2 pieces)", "Goat meat stew").  Tries aliased form first.
       let proteinFound = false;
       for (const [key, val] of proteinMap) {
-        if (lower.startsWith(key + " ") || lower === key) {
+        if (
+          aliasedLower.startsWith(key + " ") ||
+          aliasedLower === key ||
+          lower.startsWith(key + " ") ||
+          lower === key
+        ) {
           proteinName = val;
           proteinFound = true;
           break;
