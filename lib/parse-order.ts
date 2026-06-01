@@ -117,6 +117,7 @@ const GENERIC_SWALLOW_PHRASES: ReadonlySet<string> = new Set([
   "swallow of choice",
   "with swallow",         // handles oddly-formatted columns that include the separator word
   "swallow option",
+  "preferred swallow",    // used by some ELCREST / Heirs spreadsheet columns
 ]);
 
 /**

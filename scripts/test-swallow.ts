@@ -98,6 +98,7 @@ assertGeneric("swallow of choice", true);
 assertGeneric("with swallow", true);
 assertGeneric("swallow (any)", true);          // startsWith "swallow "
 assertGeneric("swallow option", true);
+assertGeneric("preferred swallow", true);
 assertGeneric("eba", false);
 assertGeneric("semo", false);
 assertGeneric("garri", false);
@@ -220,6 +221,66 @@ run({
   rawText: "Oha Soup served with swallow",
   expectedSwallow: GENERIC_SWALLOW_VALUE,
 });
+
+// Test P — "preferred swallow" (text path)
+run({
+  label: "P — Oha Soup with preferred swallow → Not Selected",
+  rawText: "Oha Soup with preferred swallow",
+  expectedSwallow: GENERIC_SWALLOW_VALUE,
+  expectedMainMeal: "Oha Soup",
+});
+
+// Test Q — "Oha Soup and Swallow" (and-separator path)
+run({
+  label: "Q — Oha Soup and Swallow (and-separator) → Not Selected",
+  rawText: "Oha Soup and Swallow",
+  expectedSwallow: GENERIC_SWALLOW_VALUE,
+  expectedMainMeal: "Oha Soup",
+});
+
+// ── Explicit-column simulation (ELCREST / Heirs swallowRaw column) ────────────
+
+/**
+ * For explicit-column parsers (ELCREST / Heirs), avon-orders.ts calls
+ * canonicalizeVocab(swallowRaw, daySwallows).  When that returns null
+ * (e.g. "Swallow" is not a vocabulary term), the fix falls back to
+ * isGenericSwallow(rawLower).  These tests verify that the fallback is correct
+ * by exercising isGenericSwallow against representative swallowRaw column values.
+ */
+
+console.log("\n── Explicit-column generic swallow fallback (isGenericSwallow) ──────");
+
+function assertExplicitColumn(swallowRaw: string, expected: string | null): void {
+  // Mirrors the fix in avon-orders.ts (the canonicalizeVocab-returns-null branch):
+  //   const rawLower = (order.swallowRaw ?? "").toLowerCase().trim();
+  //   return rawLower && isGenericSwallow(rawLower) ? GENERIC_SWALLOW_VALUE : null;
+  const rawLower = swallowRaw.toLowerCase().trim();
+  const got = rawLower && isGenericSwallow(rawLower) ? GENERIC_SWALLOW_VALUE : null;
+  if (got === expected) {
+    console.log(`  ✓  explicit column "${swallowRaw}" → ${JSON.stringify(expected)}`);
+    passed += 1;
+  } else {
+    console.error(
+      `  ✗  explicit column "${swallowRaw}" expected=${JSON.stringify(expected)} got=${JSON.stringify(got)}`,
+    );
+    failed += 1;
+  }
+}
+
+// Generic phrases that appear in ELCREST / Heirs swallow columns
+assertExplicitColumn("Swallow",           GENERIC_SWALLOW_VALUE);
+assertExplicitColumn("swallow",           GENERIC_SWALLOW_VALUE);
+assertExplicitColumn("Any Swallow",       GENERIC_SWALLOW_VALUE);
+assertExplicitColumn("any swallow",       GENERIC_SWALLOW_VALUE);
+assertExplicitColumn("Preferred Swallow", GENERIC_SWALLOW_VALUE);
+assertExplicitColumn("preferred swallow", GENERIC_SWALLOW_VALUE);
+assertExplicitColumn("Choice of Swallow", GENERIC_SWALLOW_VALUE);
+assertExplicitColumn("Swallow Option",    GENERIC_SWALLOW_VALUE);
+// Specific swallow names go through canonicalizeVocab (not this fallback) — verify
+// that they do NOT match here so canonicalizeVocab remains the sole handler.
+assertExplicitColumn("Eba",   null);   // vocabulary term handled by canonicalizeVocab
+assertExplicitColumn("Semo",  null);   // vocabulary term handled by canonicalizeVocab
+assertExplicitColumn("",      null);   // empty → null
 
 // ── Summary ───────────────────────────────────────────────────────────────────
 

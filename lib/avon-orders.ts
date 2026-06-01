@@ -2,7 +2,9 @@ import { addCalendarDays } from "@/lib/calendar-date";
 import { canonicalizeVocab, decomposeMeal } from "@/lib/decompose";
 import { matchMeal, type MenuItemAliasForMatch } from "@/lib/matchMeal";
 import {
+  GENERIC_SWALLOW_VALUE,
   hasNoProteinAnnotation,
+  isGenericSwallow,
   isNoLunchEntry,
   parseOrderText,
   stripNoProteinAnnotation,
@@ -301,9 +303,22 @@ export async function resolveOrders(
         order.proteinRaw !== undefined
           ? canonicalizeVocab(order.proteinRaw, dayProteins)
           : decomposed.proteinName;
-      const swallowName =
+      // Explicit-column parsers (ELCREST / Heirs) supply swallowRaw directly.
+      // canonicalizeVocab handles specific swallow names ("Eba", "Semo", …).
+      // When it returns null the raw value may still be a generic-swallow phrase
+      // ("Swallow", "Any Swallow", "Preferred Swallow") — fall back to
+      // isGenericSwallow so these are stored as "Not Selected" rather than
+      // silently dropped (Business Rule §11).
+      const swallowName: string | null =
         order.swallowRaw !== undefined
-          ? canonicalizeVocab(order.swallowRaw, daySwallows)
+          ? (() => {
+              const vocab = canonicalizeVocab(order.swallowRaw, daySwallows);
+              if (vocab !== null) return vocab;
+              const rawLower = (order.swallowRaw ?? "").toLowerCase().trim();
+              return rawLower && isGenericSwallow(rawLower)
+                ? GENERIC_SWALLOW_VALUE
+                : null;
+            })()
           : decomposed.swallowName;
       const mealRemainder = decomposed.mealRemainder;
       const sideItems     = decomposed.sideItems;
