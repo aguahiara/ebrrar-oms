@@ -1,0 +1,101 @@
+-- ============================================================
+-- 024_seed_upload_configs.sql
+-- ============================================================
+-- Example customer_upload_config rows for every known customer.
+-- These are provided as a migration path from the legacy
+-- customer.parser_format system to the new configurable engine.
+--
+-- IMPORTANT: Existing customers already work via parser_format.
+-- Do NOT run these inserts until you have verified that the
+-- configurable parser produces the same output as the legacy one.
+-- Uncomment and run ONE customer at a time to migrate gradually.
+--
+-- Each insert is idempotent when the customer has no active config
+-- (the unique index on customer_id/is_active prevents duplicates).
+-- ============================================================
+
+-- ── AVON — single_sheet_weekly_grid ───────────────────────────────────────
+-- Equivalent to the hardcoded avon-grid parser.
+-- insert into customer_upload_config (customer_id, format_name, parser_type, config)
+-- select id,
+--   'AVON Weekly Grid',
+--   'single_sheet_weekly_grid',
+--   '{
+--     "nameColumn": "Name",
+--     "weekdayColumns": {
+--       "Mon": "Monday",
+--       "Tue": "Tuesday",
+--       "Wed": "Wednesday",
+--       "Thu": "Thursday",
+--       "Fri": "Friday"
+--     },
+--     "optOutValues": ["n/a", "nil", "none", "not applicable", "no meal"]
+--   }'::jsonb
+-- from customer where display_name = 'AVON';
+
+-- ── HLA — single_sheet_weekly_grid (flexible header scan) ─────────────────
+-- Equivalent to the hardcoded hgi-forms parser.
+-- insert into customer_upload_config (customer_id, format_name, parser_type, config)
+-- select id,
+--   'HLA Weekly Grid',
+--   'single_sheet_weekly_grid',
+--   '{
+--     "sheetName": "Sheet1",
+--     "headerScanRows": 10,
+--     "nameColumn": "name",
+--     "weekdayColumns": {
+--       "Mon": "MONDAY",
+--       "Tue": "TUESDAY",
+--       "Wed": "WEDNESDAY",
+--       "Thu": "THURSDAY",
+--       "Fri": "FRIDAY"
+--     },
+--     "optOutValues": ["n/a", "nil", "none", "not applicable"]
+--   }'::jsonb
+-- from customer where display_name = 'HLA';
+
+-- ── ELCREST — multi_sheet_daily_form (explicit protein / swallow columns) ──
+-- Equivalent to the hardcoded elcrest-triplet parser.
+-- insert into customer_upload_config (customer_id, format_name, parser_type, config)
+-- select id,
+--   'ELCREST Microsoft Forms Export',
+--   'multi_sheet_daily_form',
+--   '{
+--     "nameColumn": "Full Name",
+--     "mealColumn": "Main Meal",
+--     "proteinColumn": "Protein",
+--     "swallowColumn": "Swallow",
+--     "sheetDayPattern": "weekday_name",
+--     "optOutValues": ["n/a", "nil", "none", "not applicable"]
+--   }'::jsonb
+-- from customer where display_name = 'ELCREST';
+
+-- ── HEIRS ENERGIES — multi_sheet_daily_remarks ─────────────────────────────
+-- Equivalent to the hardcoded heirs-sheets parser.
+-- insert into customer_upload_config (customer_id, format_name, parser_type, config)
+-- select id,
+--   'Heirs Energies Daily Sheets',
+--   'multi_sheet_daily_remarks',
+--   '{
+--     "nameColumn": "Employee",
+--     "mealColumn": "Lunch",
+--     "remarksColumn": "Remarks",
+--     "stripMealPrefix": true,
+--     "sheetDayPattern": "weekday_name",
+--     "optOutValues": []
+--   }'::jsonb
+-- from customer where display_name = 'HEIRS';
+
+-- ── SUMMARY FORMAT — for quantity-based uploads ────────────────────────────
+-- Template for any customer using the summary quantity format.
+-- insert into customer_upload_config (customer_id, format_name, parser_type, config)
+-- select id,
+--   'Weekly Summary Sheet',
+--   'summary_quantity_format',
+--   '{
+--     "mealColumn": "Meal",
+--     "quantityColumn": "Number of Staff",
+--     "commentColumn": "Comment",
+--     "defaultDay": "Mon"
+--   }'::jsonb
+-- from customer where display_name = 'SUMMARY_CUSTOMER_NAME';

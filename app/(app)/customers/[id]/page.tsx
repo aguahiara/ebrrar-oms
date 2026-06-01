@@ -2,6 +2,7 @@ import { CustomerEditForm } from "@/app/(app)/customers/[id]/customer-edit-form"
 import { getAppSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { supabase } from "@/lib/supabase";
+import { CONFIGURABLE_PARSER_LABELS } from "@/lib/upload-config";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 
@@ -28,6 +29,35 @@ export default async function CustomerDetailPage({ params }: PageProps) {
   const canEdit = hasPermission(session.selectedRole.role, "manage_customers");
 
   // ── Parallel side-queries ─────────────────────────────────────────────────
+  // ── Fetch active configurable upload config (if any) ─────────────────────
+  let uploadConfig: {
+    formatName: string;
+    parserType: string;
+    parserLabel: string;
+  } | null = null;
+  try {
+    const { data: cfgData } = await supabase
+      .from("customer_upload_config")
+      .select("format_name, parser_type")
+      .eq("customer_id", id)
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (cfgData) {
+      const pt = cfgData.parser_type as string;
+      uploadConfig = {
+        formatName: cfgData.format_name as string,
+        parserType: pt,
+        parserLabel:
+          CONFIGURABLE_PARSER_LABELS[
+            pt as keyof typeof CONFIGURABLE_PARSER_LABELS
+          ] ?? pt,
+      };
+    }
+  } catch {
+    // Table may not exist yet if migration 023 hasn't been applied
+  }
+
   const [profilesRes, ownedMenusRes, assignedMenusRes, batchRes, openExRes] = await Promise.all([
     // Portion profiles assigned to this customer
     supabase
@@ -191,6 +221,7 @@ export default async function CustomerDetailPage({ params }: PageProps) {
             parserFormat: (customer.parser_format as string | null) ?? null,
             notes: (customer.notes as string | null) ?? null,
           }}
+          uploadConfig={uploadConfig}
           canEdit={canEdit}
         />
 

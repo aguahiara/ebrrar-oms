@@ -13,12 +13,20 @@ type CustomerData = {
   notes: string | null;
 };
 
+type UploadConfigInfo = {
+  formatName: string;
+  parserType: string;
+  parserLabel: string;
+} | null;
+
 type Props = {
   customer: CustomerData;
+  /** Active customer_upload_config row, if any. null = using legacy parser_format. */
+  uploadConfig?: UploadConfigInfo;
   canEdit: boolean;
 };
 
-export function CustomerEditForm({ customer, canEdit }: Props) {
+export function CustomerEditForm({ customer, uploadConfig, canEdit }: Props) {
   const router = useRouter();
 
   const [editing, setEditing] = useState(false);
@@ -104,6 +112,27 @@ export function CustomerEditForm({ customer, canEdit }: Props) {
             <StatusChip status={customer.status} />
           </Row>
           <Row label="Order file format" value={formatLabel} />
+          {/* Configurable upload format (overrides Order file format when active) */}
+          <Row label="Configurable upload format">
+            {uploadConfig ? (
+              <span>
+                <span className="font-medium text-zinc-900 dark:text-zinc-50">
+                  {uploadConfig.formatName}
+                </span>
+                <span className="ml-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                  Active
+                </span>
+                <br />
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                  {uploadConfig.parserLabel}
+                </span>
+              </span>
+            ) : (
+              <span className="text-zinc-400 dark:text-zinc-500">
+                None — using legacy file format above
+              </span>
+            )}
+          </Row>
           <Row
             label="Notes"
             value={
