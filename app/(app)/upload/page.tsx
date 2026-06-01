@@ -12,8 +12,12 @@ type UploadSummary = {
   matchedDirect: number;
   matchedAlias: number;
   matchedFuzzy: number;
+  fruitsOnlyCount?: number;
   proteinsCaptured: number;
   swallowsCaptured: number;
+  /** Orders where an unrecognised add-on (side dish) was captured. */
+  sidesCaptured?: number;
+  acceptedNoProteinCount?: number;
   exceptions: {
     employeeName: string;
     dayOfWeek: string;
@@ -70,7 +74,10 @@ function UploadResultPanel({
   onUploadAnother: () => void;
 }) {
   const totalMatched =
-    summary.matchedDirect + summary.matchedAlias + summary.matchedFuzzy;
+    summary.matchedDirect +
+    summary.matchedAlias +
+    summary.matchedFuzzy +
+    (summary.fruitsOnlyCount ?? 0);
   const hasExceptions = summary.exceptionsInserted > 0;
   const previewExceptions = summary.exceptions.slice(0, 10);
   const exceptionsUrl = `/exceptions?customerId=${summary.customerId}&serviceWeekStart=${summary.serviceDay}`;
@@ -148,21 +155,45 @@ function UploadResultPanel({
       </div>
 
       {/* ── Stats grid ── */}
-      <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+      <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
         <StatTile label="Uploaded" value={summary.totalOrders} />
         <StatTile
-          label="Matched"
+          label="Matched Meals"
           value={totalMatched}
           accent={totalMatched > 0 ? "success" : undefined}
         />
+        <StatTile label="Proteins" value={summary.proteinsCaptured} />
+        <StatTile label="Swallows" value={summary.swallowsCaptured} />
+        {(summary.sidesCaptured ?? 0) > 0 && (
+          <StatTile label="Sides" value={summary.sidesCaptured ?? 0} />
+        )}
         <StatTile
           label="Exceptions"
           value={summary.exceptionsInserted}
           accent={summary.exceptionsInserted > 0 ? "warn" : undefined}
         />
-        <StatTile label="Proteins" value={summary.proteinsCaptured} />
-        <StatTile label="Swallows" value={summary.swallowsCaptured} />
       </div>
+
+      {/* ── Fruits Only / accepted-without-protein notices ── */}
+      {((summary.fruitsOnlyCount ?? 0) > 0 ||
+        (summary.acceptedNoProteinCount ?? 0) > 0) && (
+        <div className="space-y-1.5">
+          {(summary.fruitsOnlyCount ?? 0) > 0 && (
+            <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+              <strong>{summary.fruitsOnlyCount}</strong> Fruits Only order
+              {summary.fruitsOnlyCount !== 1 ? "s" : ""} auto-accepted — no menu
+              match or protein required.
+            </p>
+          )}
+          {(summary.acceptedNoProteinCount ?? 0) > 0 && (
+            <p className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+              <strong>{summary.acceptedNoProteinCount}</strong> order
+              {summary.acceptedNoProteinCount !== 1 ? "s" : ""} accepted without
+              protein — protein is not required for those meals.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* ── Duplicates notice ── */}
       {summary.duplicatesSkipped > 0 && (
@@ -178,6 +209,12 @@ function UploadResultPanel({
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
           Match breakdown: Direct {summary.matchedDirect} · Alias{" "}
           {summary.matchedAlias} · Fuzzy {summary.matchedFuzzy}
+          {(summary.fruitsOnlyCount ?? 0) > 0 && (
+            <> · Fruits Only {summary.fruitsOnlyCount}</>
+          )}
+          {(summary.sidesCaptured ?? 0) > 0 && (
+            <> · Sides captured {summary.sidesCaptured}</>
+          )}
         </p>
       )}
 

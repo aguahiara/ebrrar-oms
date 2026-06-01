@@ -9,8 +9,8 @@ import Link from "next/link";
 const PRODUCTION_TOOLS = [
   {
     label: "Daily Dashboard",
-    href: "/dashboard",
-    description: "Review released meal orders and customer summaries",
+    href: "/production/daily-dashboard",
+    description: "Released meal counts and customer breakdowns for production",
     icon: "📋",
   },
   {

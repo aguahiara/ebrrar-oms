@@ -1,6 +1,7 @@
 import { addCalendarDays } from "@/lib/calendar-date";
 import { canonicalizeVocab, decomposeMeal } from "@/lib/decompose";
 import { matchMeal, type MenuItemAliasForMatch } from "@/lib/matchMeal";
+import { parseOrderText } from "@/lib/parse-order";
 import type { AvonMenuItem, MenuVocabItem } from "@/lib/avon-menu";
 import type { DayOfWeek, OrderRecord } from "@/lib/order-types";
 import { supabase } from "@/lib/supabase";
@@ -15,24 +16,37 @@ const WEEKDAY_OFFSET: Record<DayOfWeek, number> = {
 
 export type ResolvedOrder = OrderRecord & {
   menuItemId: string | null;
-  matchType: "Direct" | "Alias" | "Fuzzy" | null;
+  matchType: "Direct" | "Alias" | "Fuzzy" | "FruitsOnly" | null;
   // Populated only for Fuzzy matches (the similarity score that cleared the threshold).
   matchScore: number | null;
   // Populated only when unmatched: the best fuzzy guess + score, surfaced on the exception.
   bestGuessId: string | null;
   bestScore: number | null;
-  // Protein/swallow extracted from the raw order text (FRD 4c), null if none found.
+  // Protein/swallow extracted from the raw order text, null if none found.
   proteinName: string | null;
   swallowName: string | null;
-  // The normalised meal core (raw minus protein/swallow) the matcher compared.
+  /**
+   * Unrecognised add-ons that were neither protein nor swallow (e.g. side
+   * dishes such as "Dodo", "Moi Moi").  Empty for orders parsed without a
+   * separator or for FruitsOnly orders.
+   */
+  sideItems: string[];
+  // The normalised meal core (main meal) the matcher compared.
   mealCore: string;
   /**
-   * True when protein options exist for this order's day and customer, meaning
-   * every matched line is expected to carry a protein. When true and
-   * proteinName is null, persistUpload creates a "Protein not recognised"
-   * order_exception alongside the order_line.
+   * True when protein options exist for this order's day and customer.
+   * When true and proteinName is null, persistUpload creates a
+   * "Protein not recognised" order_exception alongside the order_line.
    */
   proteinExpected: boolean;
+  /**
+   * Protein requirement of the matched menu item.
+   * "required"     — a protein must be present (default for all meals).
+   * "optional"     — protein is captured if present but not required for release.
+   * "not_required" — meal never has protein (e.g. Fruits Only).
+   * null           — unmatched order; requirement is unknown.
+   */
+  proteinRequirement: "required" | "optional" | "not_required" | null;
 };
 
 export type MatchSummary = {
@@ -40,8 +54,20 @@ export type MatchSummary = {
   matchedDirect: number;
   matchedAlias: number;
   matchedFuzzy: number;
+  /** Orders auto-accepted as "Fruits Only" (no menu match required). */
+  fruitsOnlyCount: number;
   proteinsCaptured: number;
   swallowsCaptured: number;
+  /**
+   * Orders where a side dish was captured (add-on that was neither protein
+   * nor swallow, e.g. "Dodo", "Moi Moi").
+   */
+  sidesCaptured: number;
+  /**
+   * Matched orders where no protein was provided but none was required
+   * (protein_requirement = "optional" or "not_required").
+   */
+  acceptedNoProteinCount: number;
   exceptions: {
     employeeName: string;
     dayOfWeek: DayOfWeek;
@@ -54,8 +80,41 @@ export type MatchSummary = {
 
 export const PROTEIN_EXCEPTION_TYPE = "Protein not recognised" as const;
 
+/**
+ * Regex patterns (tested against a lowercased, punctuation-stripped form of
+ * the meal text) that identify a "Fruits Only" order.  These orders are
+ * auto-accepted without requiring a menu match or a protein.
+ */
+const FRUITS_ONLY_PATTERNS: RegExp[] = [
+  /^fruits?\s+only$/,
+  /^fruits?\s+only\s+meal$/,
+  /^fruits?\s+only\s+order$/,
+  /^fruits?$/,
+  /^fruit\s+platter$/,
+  /^fruit\s+mix$/,
+  /^fresh\s+fruits?\s+only$/,
+  /^fresh\s+fruits?$/,
+];
+
+/**
+ * Returns true when the text describes a "Fruits Only" order — one that is
+ * accepted automatically without a menu match or protein requirement.
+ * Tested against a lowercased, punctuation-stripped (but NOT stopword-filtered)
+ * form so that "Fruits Only" and "FRUITS ONLY MEAL" both match.
+ */
+export function isFruitsOnly(text: string): boolean {
+  const norm = text
+    .toLowerCase()
+    .trim()
+    .replace(/[,&+()\-/:'"]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return FRUITS_ONLY_PATTERNS.some((p) => p.test(norm));
+}
+
 export function buildMatchSummary(orders: ResolvedOrder[]): MatchSummary {
-  // "Meal not on menu" exceptions — unmatched orders
+  // "Meal not on menu" exceptions — truly unmatched orders (matchType === null)
+  // FruitsOnly orders are NOT in this list; they are auto-accepted.
   const mealExceptions = orders
     .filter((order) => order.matchType === null)
     .map(({ employeeName, dayOfWeek, rawMealText, bestScore }) => ({
@@ -65,13 +124,15 @@ export function buildMatchSummary(orders: ResolvedOrder[]): MatchSummary {
       bestScore,
     }));
 
-  // "Protein not recognised" exceptions — matched but missing protein
+  // "Protein not recognised" exceptions — matched but missing protein.
   const proteinExceptions = orders
     .filter(
       (order) =>
         order.matchType !== null &&
+        order.matchType !== "FruitsOnly" &&
         order.proteinExpected &&
-        order.proteinName === null,
+        order.proteinName === null &&
+        order.proteinRequirement === "required",
     )
     .map(({ employeeName, dayOfWeek, rawMealText }) => ({
       employeeName,
@@ -81,13 +142,26 @@ export function buildMatchSummary(orders: ResolvedOrder[]): MatchSummary {
       exceptionType: PROTEIN_EXCEPTION_TYPE,
     }));
 
+  // Orders accepted with no protein because protein is not required.
+  const acceptedNoProteinCount = orders.filter(
+    (order) =>
+      order.matchType !== null &&
+      order.matchType !== "FruitsOnly" &&
+      order.proteinName === null &&
+      order.proteinRequirement !== null &&
+      order.proteinRequirement !== "required",
+  ).length;
+
   return {
     totalOrders: orders.length,
-    matchedDirect: orders.filter((order) => order.matchType === "Direct").length,
-    matchedAlias: orders.filter((order) => order.matchType === "Alias").length,
-    matchedFuzzy: orders.filter((order) => order.matchType === "Fuzzy").length,
-    proteinsCaptured: orders.filter((order) => order.proteinName !== null).length,
-    swallowsCaptured: orders.filter((order) => order.swallowName !== null).length,
+    matchedDirect: orders.filter((o) => o.matchType === "Direct").length,
+    matchedAlias:  orders.filter((o) => o.matchType === "Alias").length,
+    matchedFuzzy:  orders.filter((o) => o.matchType === "Fuzzy").length,
+    fruitsOnlyCount: orders.filter((o) => o.matchType === "FruitsOnly").length,
+    proteinsCaptured: orders.filter((o) => o.proteinName !== null).length,
+    swallowsCaptured: orders.filter((o) => o.swallowName !== null).length,
+    sidesCaptured: orders.filter((o) => (o.sideItems?.length ?? 0) > 0).length,
+    acceptedNoProteinCount,
     exceptions: [...mealExceptions, ...proteinExceptions],
   };
 }
@@ -100,10 +174,15 @@ export function lineServiceDay(
 }
 
 /**
- * Resolve every parsed order (FRD 4c + 8.4): first decompose the raw text into
- * meal core + protein + swallow, then run the three-step reconciliation
- * (Direct -> Alias -> Fuzzy) on the meal core. menuItems/proteins/swallows are
- * filtered to the order's day; matchMeal restricts aliases to that day's items.
+ * Resolve every parsed order: decompose the raw text into meal core + protein
+ * + swallow using the separator-based parser, then run the three-step
+ * reconciliation (Direct → Alias → Fuzzy) on the meal core.
+ *
+ * menuItems/proteins/swallows are filtered to the order's day; matchMeal
+ * restricts aliases to that day's items.
+ *
+ * Business Rules §1-§14 are implemented via parse-order.ts (decomposeMeal)
+ * and matchMeal.ts (menu-item main-meal extraction).
  */
 export async function resolveOrders(
   orders: OrderRecord[],
@@ -125,14 +204,41 @@ export async function resolveOrders(
         .map((s) => s.name);
 
       // Protein is expected when the customer's menu has protein options for
-      // this day. A matched line without a protein will become an exception.
+      // this day. A matched line without a required protein will become an exception.
       const proteinExpected = dayProteins.length > 0;
 
+      // ── Step 0a: detect "Fruits Only" on the raw text (pre-decompose) ──────
+      // We check here first because the raw text is unambiguous.
+      if (isFruitsOnly(order.rawMealText)) {
+        if (process.env.NODE_ENV === "development") {
+          console.log("[resolveOrders] FruitsOnly (raw)", {
+            employee: order.employeeName,
+            raw: order.rawMealText,
+          });
+        }
+        return {
+          ...order,
+          menuItemId: null,
+          matchType: "FruitsOnly" as const,
+          matchScore: null,
+          bestGuessId: null,
+          bestScore: null,
+          proteinName: null,
+          swallowName: null,
+          sideItems: [],
+          mealCore: order.rawMealText,
+          proteinExpected: false,
+          proteinRequirement: "not_required" as const,
+        };
+      }
+
+      // ── Decompose: separator-based parsing (Business Rules §1-§8) ──────────
       const decomposed = decomposeMeal(
         order.rawMealText,
         dayProteins,
         daySwallows,
       );
+
       // Explicit protein/swallow columns (Elcrest/Energia) take precedence over
       // values extracted from the meal text (AVON/HGI).
       const proteinName =
@@ -144,10 +250,64 @@ export async function resolveOrders(
           ? canonicalizeVocab(order.swallowRaw, daySwallows)
           : decomposed.swallowName;
       const mealRemainder = decomposed.mealRemainder;
+      const sideItems     = decomposed.sideItems;
 
+      // ── Step 0b: detect "Fruits Only" on the meal remainder (post-decompose) ─
+      // Catches "Fruits Only + Chicken" where decomposeMeal stripped "Chicken".
+      if (isFruitsOnly(mealRemainder)) {
+        if (process.env.NODE_ENV === "development") {
+          console.log("[resolveOrders] FruitsOnly (remainder)", {
+            employee: order.employeeName,
+            raw: order.rawMealText,
+            mealRemainder,
+          });
+        }
+        return {
+          ...order,
+          menuItemId: null,
+          matchType: "FruitsOnly" as const,
+          matchScore: null,
+          bestGuessId: null,
+          bestScore: null,
+          proteinName,
+          swallowName,
+          sideItems,
+          mealCore: mealRemainder,
+          proteinExpected: false,
+          proteinRequirement: "not_required" as const,
+        };
+      }
+
+      // ── Dev diagnostic: log parsed components ─────────────────────────────
+      if (process.env.NODE_ENV === "development") {
+        const { mainMeal, addOns } = parseOrderText(order.rawMealText);
+        console.log("[resolveOrders] parsed", {
+          employee:     order.employeeName,
+          raw:          order.rawMealText,
+          mainMeal,
+          addOns,
+          mealRemainder,
+          proteinName,
+          swallowName,
+          sideItems,
+        });
+      }
+
+      // ── Match: Direct → Alias → Fuzzy on meal remainder (main meal) ────────
       const result = await matchMeal(mealRemainder, dayItems, aliases);
 
       if (result.matchType !== null) {
+        const matchedItem = dayItems.find((item) => item.id === result.itemId);
+
+        if (process.env.NODE_ENV === "development") {
+          console.log("[resolveOrders] matched", {
+            employee:    order.employeeName,
+            mealRemainder,
+            matchType:   result.matchType,
+            matchedItem: matchedItem?.canonical_name ?? result.itemId,
+          });
+        }
+
         return {
           ...order,
           menuItemId: result.itemId,
@@ -157,9 +317,20 @@ export async function resolveOrders(
           bestScore: null,
           proteinName,
           swallowName,
+          sideItems,
           mealCore: mealRemainder,
           proteinExpected,
+          proteinRequirement: matchedItem?.protein_requirement ?? "required",
         };
+      }
+
+      if (process.env.NODE_ENV === "development") {
+        console.log("[resolveOrders] no match", {
+          employee:     order.employeeName,
+          mealRemainder,
+          bestGuessId:  result.bestGuessId ?? "none",
+          bestScore:    Number(result.bestScore.toFixed(3)),
+        });
       }
 
       return {
@@ -171,8 +342,11 @@ export async function resolveOrders(
         bestScore: result.bestScore,
         proteinName,
         swallowName,
+        sideItems,
         mealCore: mealRemainder,
         proteinExpected,
+        // Unmatched — protein_requirement is unknown until the operator resolves.
+        proteinRequirement: null,
       };
     }),
   );
@@ -197,10 +371,11 @@ export async function fetchCustomerId(
 }
 
 /**
- * Persist a parsed batch. Matched orders (Direct/Alias/Fuzzy) become order_line rows;
- * unmatched orders become Open order_exception rows so nothing silently enters the
- * production count (FRD 5.9). Employees already counted for the same customer +
- * service day are treated as duplicates and skipped (FR-OV-2, Keep-first rule).
+ * Persist a parsed batch.  Matched orders (Direct/Alias/Fuzzy) become
+ * order_line rows; unmatched orders become Open order_exception rows so
+ * nothing silently enters the production count.  Employees already counted
+ * for the same customer + service day are treated as duplicates and skipped
+ * (Keep-first rule).
  */
 export async function persistUpload(params: {
   customerDisplayName: string;
@@ -231,9 +406,8 @@ export async function persistUpload(params: {
     );
   }
 
-  // Duplicate detection (FR-OV-2): an employee already counted for this
-  // customer + service day is a duplicate. Rule: Keep first — skip the new one.
-  // (Per-customer Keep-first/Keep-last/Reject rules are a future enhancement.)
+  // Duplicate detection: an employee already counted for this customer +
+  // service day is a duplicate. Rule: Keep first — skip the new one.
   const serviceDays = Array.from(
     new Set(
       params.orders.map((o) => lineServiceDay(params.serviceDay, o.dayOfWeek)),
@@ -251,9 +425,8 @@ export async function persistUpload(params: {
         .select("employee_ref, service_day")
         .eq("customer_id", customerId)
         .in("service_day", serviceDays),
-      // Check ALL exception statuses, not just Open.
-      // Without this, a re-upload after resolving exceptions (Dropped / AcceptedAsIs)
-      // would not detect those employees as duplicates and would re-insert them.
+      // Check ALL exception statuses — without this, a re-upload after
+      // resolving exceptions would not detect those employees as duplicates.
       supabase
         .from("order_exception")
         .select("employee_ref, service_day")
@@ -282,7 +455,33 @@ export async function persistUpload(params: {
     }
     seen.add(key);
 
-    if (order.matchType !== null) {
+    if (order.matchType === "FruitsOnly") {
+      // Auto-accepted: insert as a matched order_line with a "(No protein)"
+      // sentinel so release Guard 4 is not triggered.  menu_item_id stays null
+      // (no canonical menu item exists for this order) and Guard 3 excludes
+      // FruitsOnly lines via match_type filter.
+      lineRows.push({
+        order_batch_id: batch.id,
+        customer_id: customerId,
+        service_day: serviceDay,
+        menu_item_id: null,
+        meal_name_raw: order.rawMealText,
+        employee_ref: order.employeeName,
+        quantity: 1,
+        match_type: "FruitsOnly",
+        protein_name: "(No protein)",
+        swallow_name: order.swallowName,
+      });
+    } else if (order.matchType !== null) {
+      // For meals where protein is not required and no protein was provided,
+      // write the "(No protein)" sentinel so Guard 4 is not triggered.
+      const proteinValue =
+        order.proteinName !== null
+          ? order.proteinName
+          : order.proteinRequirement !== "required"
+            ? "(No protein)"
+            : null;
+
       lineRows.push({
         order_batch_id: batch.id,
         customer_id: customerId,
@@ -292,21 +491,24 @@ export async function persistUpload(params: {
         employee_ref: order.employeeName,
         quantity: 1,
         match_type: order.matchType,
-        protein_name: order.proteinName,
+        protein_name: proteinValue,
         swallow_name: order.swallowName,
       });
 
-      // When protein is expected for this day but none was found, also create
-      // a "Protein not recognised" exception so the operator can resolve it
-      // through the Exceptions page (rather than seeing only a release blocker).
-      if (order.proteinExpected && order.proteinName === null) {
+      // When protein is expected, none was found, AND the meal requires
+      // protein — create a "Protein not recognised" exception.
+      if (
+        order.proteinExpected &&
+        order.proteinName === null &&
+        order.proteinRequirement === "required"
+      ) {
         exceptionRows.push({
           order_batch_id: batch.id,
           customer_id: customerId,
           service_day: serviceDay,
           raw_value: order.rawMealText,
           // For parsers with an explicit protein column, store the raw text so
-          // the operator can see what was provided; null for text-based extraction.
+          // the operator can see what was provided.
           meal_core: order.proteinRaw ?? null,
           employee_ref: order.employeeName,
           exception_type: PROTEIN_EXCEPTION_TYPE,
@@ -316,11 +518,14 @@ export async function persistUpload(params: {
         });
       }
     } else {
+      // Unmatched meal — create a "Meal not on menu" exception.
       exceptionRows.push({
         order_batch_id: batch.id,
         customer_id: customerId,
         service_day: serviceDay,
         raw_value: order.rawMealText,
+        // meal_core stores the normalised main meal so the exception resolver
+        // can display what was extracted, and so alias saving uses the right key.
         meal_core: order.mealCore,
         employee_ref: order.employeeName,
         exception_type: "Meal not on menu",
@@ -341,7 +546,6 @@ export async function persistUpload(params: {
     if (linesError) {
       throw new Error(`Failed to insert order lines: ${linesError.message}`);
     }
-
     linesInserted = inserted?.length ?? 0;
   }
 
@@ -357,16 +561,10 @@ export async function persistUpload(params: {
         `Failed to insert order exceptions: ${exceptionError.message}`,
       );
     }
-
     exceptionsInserted = insertedExceptions?.length ?? 0;
   }
 
-  return {
-    batchId: batch.id,
-    linesInserted,
-    exceptionsInserted,
-    duplicatesSkipped,
-  };
+  return { batchId: batch.id, linesInserted, exceptionsInserted, duplicatesSkipped };
 }
 
 /**

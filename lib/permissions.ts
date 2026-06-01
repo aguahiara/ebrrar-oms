@@ -60,7 +60,7 @@ export const ROLE_NAV: Record<UserRole, NavItem[]> = {
       label: "Production",
       href: "#",
       children: [
-        { label: "Daily Dashboard", href: "/dashboard" },
+        { label: "Daily Dashboard", href: "/production/daily-dashboard" },
         { label: "Kitchen Quantities", href: "/production-quantities" },
       ],
     },
@@ -87,7 +87,7 @@ export const ROLE_NAV: Record<UserRole, NavItem[]> = {
       label: "Production",
       href: "#",
       children: [
-        { label: "Daily Dashboard", href: "/dashboard" },
+        { label: "Daily Dashboard", href: "/production/daily-dashboard" },
         { label: "Kitchen Quantities", href: "/production-quantities" },
       ],
     },
@@ -134,6 +134,7 @@ export const ROLE_ALLOWED_PREFIXES: Record<UserRole, string[]> = {
     "/customers",
     "/menu",
     "/portion-profiles",
+    "/production",
     "/production-quantities",
     "/upload",
     "/exceptions",

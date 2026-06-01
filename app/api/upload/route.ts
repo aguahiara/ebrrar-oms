@@ -62,11 +62,15 @@ export async function POST(request: Request) {
     const buffer = Buffer.from(await file.arrayBuffer());
     const parse = getParserByFormat(customerRow.parser_format);
     const orders = parse(buffer);
+    // Pass serviceDay as serviceWeekStart so the version resolver uses the
+    // correct published menu for this upload's service week (Mon–Fri window).
+    // serviceDay is already the Monday of the week (the upload form sets it
+    // to "service week start").
     const [menuItems, aliases, proteins, swallows] = await Promise.all([
-      fetchMenuItems(customer),
-      fetchAliases(customer),
-      fetchProteins(customer),
-      fetchSwallows(customer),
+      fetchMenuItems(customer, serviceDay),
+      fetchAliases(customer, serviceDay),
+      fetchProteins(customer, serviceDay),
+      fetchSwallows(customer, serviceDay),
     ]);
     const resolved = await resolveOrders(
       orders,

@@ -2,8 +2,25 @@ import { parseCalendarDate, addCalendarDays } from "@/lib/calendar-date";
 import type { AvonMenuItem, MenuVocabItem } from "@/lib/avon-menu";
 export type { MenuVocabItem };
 import { fetchMenuItems, fetchProteins } from "@/lib/avon-menu";
+import { PROTEIN_EXCEPTION_TYPE } from "@/lib/avon-orders";
 import type { DayOfWeek } from "@/lib/order-types";
 import { supabase } from "@/lib/supabase";
+
+// ─── Week-start helper ────────────────────────────────────────────────────────
+
+/**
+ * Given any calendar date (Mon–Fri), return the Monday of its ISO week.
+ * Used to align a specific exception service_day to the menu version that was
+ * uploaded for that week.
+ */
+export function getMondayOfWeek(serviceDay: string): string {
+  const { year, month, day } = parseCalendarDate(serviceDay);
+  const d = new Date(year, month - 1, day);
+  const jsDay = d.getDay(); // 0=Sun 1=Mon … 6=Sat
+  // Monday offset: Mon=0, Tue=-1, Wed=-2, Thu=-3, Fri=-4
+  const offset = jsDay === 0 ? -6 : 1 - jsDay;
+  return addCalendarDays(serviceDay, offset);
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -142,12 +159,18 @@ export async function fetchExceptions(params: {
 }
 
 /**
- * Count Open exceptions that match the bulk-correction criteria:
- *   same customer, same raw_value, same exception_type, status = "Open",
- *   excluding the exception that triggered the correction.
+ * Count Open exceptions that match the bulk-correction criteria,
+ * excluding the exception that triggered the correction.
  *
  * scope = "service_day" → also restricts to the same service_day.
  * scope = "all"         → all future/current unresolved occurrences.
+ *
+ * For protein exceptions (exceptionType === PROTEIN_EXCEPTION_TYPE) the
+ * similarity criterion is the matched menu_item_id, not raw_value.
+ * Provide orderBatchId + employeeRef so the function can look up the
+ * order_line to obtain menu_item_id (same two-step logic as the resolve
+ * route's bulk path).  Falls back to raw_value matching when the lookup
+ * fails or the parameters are absent.
  */
 export async function countSimilarExceptions(params: {
   customerId: string;
@@ -156,10 +179,87 @@ export async function countSimilarExceptions(params: {
   excludeId: string;
   scope: BulkScope;
   serviceDay: string;
+  /** Needed for protein exception menu_item_id lookup */
+  orderBatchId?: string;
+  /** Needed for protein exception menu_item_id lookup */
+  employeeRef?: string;
 }): Promise<number> {
-  const { customerId, rawValue, exceptionType, excludeId, scope, serviceDay } =
-    params;
+  const {
+    customerId,
+    rawValue,
+    exceptionType,
+    excludeId,
+    scope,
+    serviceDay,
+    orderBatchId,
+    employeeRef,
+  } = params;
 
+  // ── Protein exceptions: group by menu_item_id ─────────────────────────────
+  if (exceptionType === PROTEIN_EXCEPTION_TYPE && orderBatchId && employeeRef) {
+    // Step 1 — look up this exception's order_line → get menu_item_id
+    const { data: line } = await supabase
+      .from("order_line")
+      .select("menu_item_id")
+      .eq("order_batch_id", orderBatchId)
+      .eq("customer_id", customerId)
+      .eq("service_day", serviceDay)
+      .eq("employee_ref", employeeRef)
+      .maybeSingle();
+
+    const targetMenuItemId = line?.menu_item_id as string | null;
+
+    if (targetMenuItemId) {
+      // Step 2 — all order_lines for that menu item with protein still null
+      let linesQuery = supabase
+        .from("order_line")
+        .select("order_batch_id, employee_ref, service_day")
+        .eq("customer_id", customerId)
+        .eq("menu_item_id", targetMenuItemId)
+        .is("protein_name", null);
+
+      if (scope === "service_day") {
+        linesQuery = linesQuery.eq("service_day", serviceDay);
+      }
+
+      const { data: matchingLines } = await linesQuery;
+      if (!matchingLines || matchingLines.length === 0) return 0;
+
+      // Build a lookup set; exclude the current exception's own line
+      const lineKeys = new Set(
+        matchingLines.map(
+          (l) => `${l.order_batch_id}\x00${l.employee_ref}\x00${l.service_day}`,
+        ),
+      );
+      lineKeys.delete(`${orderBatchId}\x00${employeeRef}\x00${serviceDay}`);
+      if (lineKeys.size === 0) return 0;
+
+      // Step 3 — open protein exceptions for this customer/scope
+      let exQuery = supabase
+        .from("order_exception")
+        .select("id, order_batch_id, employee_ref, service_day")
+        .eq("customer_id", customerId)
+        .eq("exception_type", PROTEIN_EXCEPTION_TYPE)
+        .eq("status", "Open")
+        .neq("id", excludeId);
+
+      if (scope === "service_day") {
+        exQuery = exQuery.eq("service_day", serviceDay);
+      }
+
+      const { data: candidates } = await exQuery;
+
+      // Cross-reference: count those whose order_line key is in our set
+      return (candidates ?? []).filter((ex) =>
+        lineKeys.has(
+          `${ex.order_batch_id}\x00${ex.employee_ref}\x00${ex.service_day}`,
+        ),
+      ).length;
+    }
+    // Fall through to raw_value matching if menu_item_id lookup failed
+  }
+
+  // ── Default: raw_value matching (meal exceptions + protein fallback) ───────
   let query = supabase
     .from("order_exception")
     .select("id", { count: "exact", head: true })
@@ -179,7 +279,28 @@ export async function countSimilarExceptions(params: {
 }
 
 /**
- * Published menu items for a customer on the weekday matching serviceDay.
+ * All published menu items for a customer for the whole service week that
+ * contains `serviceWeekStart` (a Monday YYYY-MM-DD).
+ *
+ * Returns items from the applicable published menu version — either the version
+ * the customer is assigned to for this week, or the latest published global menu
+ * for this week, or the latest global menu of any week as a last resort.
+ *
+ * All returned items carry `menuSource` ("assigned" | "general") so callers can
+ * show users where the data comes from.
+ */
+export async function fetchMenuItemsForWeek(
+  customerDisplayName: string,
+  serviceWeekStart: string,
+): Promise<AvonMenuItem[]> {
+  return fetchMenuItems(customerDisplayName, serviceWeekStart);
+}
+
+/**
+ * Published menu items for a customer on the weekday matching `serviceDay`.
+ *
+ * Derives the service week start (Monday) from `serviceDay`, resolves the
+ * correct published menu version for that week, then filters to the day's items.
  * Returns an empty array when the service day falls on a weekend.
  */
 export async function fetchMenuItemsForServiceDay(
@@ -188,7 +309,8 @@ export async function fetchMenuItemsForServiceDay(
 ): Promise<AvonMenuItem[]> {
   const day = serviceDayToAvonDay(serviceDay);
   if (!day) return [];
-  const items = await fetchMenuItems(customerDisplayName);
+  const serviceWeekStart = getMondayOfWeek(serviceDay);
+  const items = await fetchMenuItems(customerDisplayName, serviceWeekStart);
   return items.filter((item) => item.day_of_week === day);
 }
 

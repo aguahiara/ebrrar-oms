@@ -8,6 +8,7 @@ import {
   fetchAllProteinsForCustomer,
   fetchExceptions,
   fetchMenuItemsForServiceDay,
+  fetchMenuItemsForWeek,
   serviceDayToAvonDay,
   type BulkScope,
   type CustomerSummary,
@@ -16,8 +17,9 @@ import {
   type OpenOrderException,
 } from "@/lib/avon-exceptions";
 import { DEFAULT_SERVICE_DAY, formatServiceDayLabel } from "@/lib/avon-dashboard";
-import { addCalendarDays } from "@/lib/calendar-date";
 import { PROTEIN_EXCEPTION_TYPE } from "@/lib/avon-orders";
+import { normalize } from "@/lib/matchMeal";
+import { parseOrderText } from "@/lib/parse-order";
 import type { AvonMenuItem } from "@/lib/avon-menu";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -95,6 +97,7 @@ function ExceptionsContent() {
 
   // ── Per-exception action state ────────────────────────────────────────────
   const [selectedMenuItemId, setSelectedMenuItemId] = useState<Record<string, string>>({});
+  const [menuItemSearch, setMenuItemSearch] = useState<Record<string, string>>({});
   const [saveAsAlias, setSaveAsAlias] = useState<Record<string, boolean>>({});
   // Protein state — populated when protein exceptions are loaded
   const [allProteins, setAllProteins] = useState<MenuVocabItem[]>([]);
@@ -112,6 +115,12 @@ function ExceptionsContent() {
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * True when the operator has resolved (or just resolved) all Open exceptions
+   * for the current customer + date/week.  Triggers the "All resolved" next-step
+   * panel instead of the generic empty-state message.
+   */
+  const [resolvedAll, setResolvedAll] = useState(false);
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const selectedCustomer = customers.find((c) => c.id === customerId) ?? null;
@@ -135,6 +144,7 @@ function ExceptionsContent() {
     const run = async () => {
       if (!customerId) {
         setExceptions([]);
+        setResolvedAll(false);
         setLoading(false);
         return;
       }
@@ -149,6 +159,21 @@ function ExceptionsContent() {
         if (!alive) return;
         setExceptions(data);
 
+        // When the Open filter returns no exceptions, check whether there are
+        // resolved exceptions (i.e. "all resolved") vs genuinely none at all.
+        if (data.length === 0 && statusFilter === "Open") {
+          try {
+            const allData = weekMode
+              ? await fetchExceptions({ customerId, serviceWeekStart, statusFilter: "All" })
+              : await fetchExceptions({ customerId, serviceDay, statusFilter: "All" });
+            if (alive) setResolvedAll(allData.length > 0);
+          } catch {
+            if (alive) setResolvedAll(false);
+          }
+        } else {
+          setResolvedAll(false);
+        }
+
         const initialSelection: Record<string, string> = {};
         for (const ex of data) {
           if (ex.status === "Open" && ex.suggested_item_id) {
@@ -156,6 +181,7 @@ function ExceptionsContent() {
           }
         }
         setSelectedMenuItemId((prev) => ({ ...prev, ...initialSelection }));
+        setMenuItemSearch({});
         setSaveAsAlias({});
         setSelectedProteinName({});
         setApplyToSimilar({});
@@ -167,6 +193,7 @@ function ExceptionsContent() {
         if (!alive) return;
         setError(err instanceof Error ? err.message : "Failed to load exceptions.");
         setExceptions([]);
+        setResolvedAll(false);
         setLoading(false);
       }
     };
@@ -189,26 +216,13 @@ function ExceptionsContent() {
         let data: AvonMenuItem[];
 
         if (weekMode && serviceWeekStart) {
-          // Load all five weekdays and merge into a single deduplicated list
-          const weekDates = [0, 1, 2, 3, 4].map((n) =>
-            addCalendarDays(serviceWeekStart, n),
-          );
-          const allDaysItems = await Promise.all(
-            weekDates.map((d) =>
-              fetchMenuItemsForServiceDay(selectedCustomer.display_name, d),
-            ),
-          );
-          const seen = new Set<string>();
-          data = [];
-          for (const dayItems of allDaysItems) {
-            for (const item of dayItems) {
-              if (!seen.has(item.id)) {
-                seen.add(item.id);
-                data.push(item);
-              }
-            }
-          }
+          // Load all items for the service week in one query.
+          // fetchMenuItemsForWeek resolves the correct published menu version
+          // (assigned → general fallback) and returns all Mon–Fri items.
+          data = await fetchMenuItemsForWeek(selectedCustomer.display_name, serviceWeekStart);
         } else {
+          // fetchMenuItemsForServiceDay derives the service week start from
+          // serviceDay and returns only items for that day's weekday.
           data = await fetchMenuItemsForServiceDay(
             selectedCustomer.display_name,
             serviceDay,
@@ -217,7 +231,7 @@ function ExceptionsContent() {
 
         if (!alive) return;
         setMenuItems(data);
-        if (data[0]) {
+        if (data.length > 0) {
           setSelectedMenuItemId((prev) => {
             const updated = { ...prev };
             for (const ex of exceptions) {
@@ -226,7 +240,13 @@ function ExceptionsContent() {
                 ex.exception_type !== PROTEIN_EXCEPTION_TYPE &&
                 !updated[ex.id]
               ) {
-                updated[ex.id] = data[0].id;
+                // Pre-select the first item for the exception's specific day
+                // (avoids pre-selecting Monday's item for a Thursday exception).
+                const exDay = serviceDayToAvonDay(ex.service_day);
+                const firstForDay = exDay
+                  ? data.find((item) => item.day_of_week === exDay)
+                  : null;
+                updated[ex.id] = (firstForDay ?? data[0]).id;
               }
             }
             return updated;
@@ -288,12 +308,80 @@ function ExceptionsContent() {
         excludeId: ex.id,
         scope,
         serviceDay: ex.service_day,
+        // For protein exceptions, pass the order_line lookup keys so the count
+        // function can group by menu_item_id instead of raw_value.
+        orderBatchId: ex.order_batch_id,
+        employeeRef: ex.employee_ref,
       });
       setSimilarCount((prev) => ({ ...prev, [ex.id]: n }));
     } catch {
       setSimilarCount((prev) => ({ ...prev, [ex.id]: null }));
     } finally {
       setSimilarCountLoading((prev) => ({ ...prev, [ex.id]: false }));
+    }
+  }
+
+  // ── "Mark protein not required" handler ───────────────────────────────────
+  // Accepts the exception, permanently updates menu_item.protein_requirement to
+  // "not_required", and (when bulk is enabled) applies the same to all similar
+  // open protein exceptions for this customer.
+  async function handleMarkNotRequired(ex: OpenOrderException) {
+    const isBulk = applyToSimilar[ex.id] ?? false;
+    const others = similarCount[ex.id] ?? 0;
+    const totalExpected = isBulk ? others + 1 : 1;
+
+    const bulkNote = isBulk && others > 0
+      ? `\n\nThis will also resolve ${others} similar unresolved protein exception${others !== 1 ? "s" : ""} for this customer (${totalExpected} total).`
+      : "";
+
+    const confirmed = window.confirm(
+      `Mark "${ex.raw_value}" as a meal that never requires protein?\n\n` +
+        "This will update the menu item permanently — future uploads for this meal will not create protein exceptions." +
+        bulkNote,
+    );
+    if (!confirmed) return;
+
+    setResolvingId(ex.id);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/exceptions/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          exceptionId: ex.id,
+          action: "accept",
+          saveAsNotRequired: true,
+          applyToSimilar: isBulk,
+          scope: isBulk ? (similarScope[ex.id] ?? "service_day") : "service_day",
+        }),
+      });
+
+      const data = (await res.json()) as { ok?: boolean; affected?: number; error?: string };
+      if (!res.ok) throw new Error(data.error ?? "Failed to update menu item.");
+
+      const affected = data.affected ?? 1;
+      showSuccess(
+        affected === 1
+          ? "Protein marked as not required for 1 order. Future uploads will not create this exception."
+          : `Protein marked as not required for ${affected} orders. Future uploads will not create this exception.`,
+      );
+
+      if (isBulk && affected > 1) {
+        // Reload the full list so all bulk-resolved rows disappear together.
+        // The loading effect will run the secondary "resolved-all" check.
+        setRefreshKey((k) => k + 1);
+      } else {
+        const remaining = exceptions.filter((row) => row.id !== ex.id);
+        setExceptions(remaining);
+        if (remaining.length === 0 && statusFilter === "Open") {
+          setResolvedAll(true);
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to mark as not required.");
+    } finally {
+      setResolvingId(null);
     }
   }
 
@@ -346,10 +434,15 @@ function ExceptionsContent() {
       );
 
       if (isBulk && affected > 1) {
-        // Reload entire list so all bulk-resolved rows disappear
+        // Reload entire list so all bulk-resolved rows disappear.
+        // The loading effect will run the secondary "resolved-all" check.
         setRefreshKey((k) => k + 1);
       } else {
-        setExceptions((current) => current.filter((row) => row.id !== ex.id));
+        const remaining = exceptions.filter((row) => row.id !== ex.id);
+        setExceptions(remaining);
+        if (remaining.length === 0 && statusFilter === "Open") {
+          setResolvedAll(true);
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to resolve exception.");
@@ -473,13 +566,48 @@ function ExceptionsContent() {
 
         {/* ── Empty state ── */}
         {customerId && !loading && exceptions.length === 0 && (
-          <div className="rounded-xl border border-zinc-200 bg-white p-8 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              {weekMode
-                ? "No exceptions found for this customer and service week."
-                : "No exceptions found for this customer and service date."}
-            </p>
-          </div>
+          <>
+            {resolvedAll && statusFilter === "Open" ? (
+              /* ── All exceptions resolved — show next-step panel ── */
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-8 py-12 text-center shadow-sm dark:border-emerald-800 dark:bg-emerald-950/60">
+                <div className="mb-4 inline-flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-2xl dark:bg-emerald-900/60">
+                  ✓
+                </div>
+                <h2 className="text-base font-semibold text-emerald-900 dark:text-emerald-50">
+                  All exceptions resolved
+                </h2>
+                <p className="mt-2 text-sm text-emerald-700 dark:text-emerald-300">
+                  {selectedCustomer?.display_name} has no remaining open exceptions
+                  for{" "}
+                  {weekMode
+                    ? `the week starting ${formatServiceDayLabel(serviceWeekStart)}`
+                    : formatServiceDayLabel(serviceDay)}
+                  .
+                </p>
+                <p className="mt-1 text-sm text-emerald-600 dark:text-emerald-400">
+                  Head to Order Review to check the reconciled orders and release
+                  them for production.
+                </p>
+                <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
+                  <a
+                    href={`/dashboard?date=${weekMode ? serviceWeekStart : serviceDay}`}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-emerald-600 dark:bg-emerald-600 dark:hover:bg-emerald-500"
+                  >
+                    Go to Order Review →
+                  </a>
+                </div>
+              </div>
+            ) : (
+              /* ── Generic empty state (no exceptions for this filter) ── */
+              <div className="rounded-xl border border-zinc-200 bg-white p-8 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                  {weekMode
+                    ? "No exceptions found for this customer and service week."
+                    : "No exceptions found for this customer and service date."}
+                </p>
+              </div>
+            )}
+          </>
         )}
 
         {/* ── Exception list ── */}
@@ -530,6 +658,45 @@ function ExceptionsContent() {
                     <p className="text-zinc-600 dark:text-zinc-400">
                       Raw: &quot;{ex.raw_value}&quot;
                     </p>
+
+                    {/* Parsed breakdown — show how the system split the order */}
+                    {(() => {
+                      const parsed = parseOrderText(ex.raw_value);
+                      if (!parsed.hasSeparator && parsed.addOns.length === 0) {
+                        // No separator — show the main meal extract from meal_core
+                        // (which is the normalised main meal stored at upload time).
+                        if (!isProtein && ex.meal_core && ex.meal_core !== ex.raw_value.toLowerCase()) {
+                          return (
+                            <p className="text-zinc-500 dark:text-zinc-400 text-xs">
+                              Meal core: &quot;
+                              <span className="text-zinc-700 dark:text-zinc-300">{ex.meal_core}</span>
+                              &quot;
+                            </p>
+                          );
+                        }
+                        return null;
+                      }
+                      return (
+                        <div className="rounded-md border border-zinc-100 bg-zinc-50 px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900/60">
+                          <p className="font-medium text-zinc-500 dark:text-zinc-400 mb-1">
+                            Parsed breakdown
+                          </p>
+                          <div className="space-y-0.5">
+                            <p className="text-zinc-700 dark:text-zinc-300">
+                              <span className="text-zinc-500 dark:text-zinc-400">Main meal: </span>
+                              {parsed.mainMeal}
+                            </p>
+                            {parsed.addOns.map((a, i) => (
+                              <p key={i} className="text-zinc-700 dark:text-zinc-300">
+                                <span className="text-zinc-500 dark:text-zinc-400">Add-on: </span>
+                                {a}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
                     {/* For protein exceptions, show the raw protein text if captured */}
                     {isProtein && ex.meal_core && (
                       <p className="text-zinc-600 dark:text-zinc-400">
@@ -593,52 +760,162 @@ function ExceptionsContent() {
                       ) : (
                         <>
                           <div className="mt-4">
-                            <label
-                              htmlFor={`menu-${ex.id}`}
-                              className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
-                            >
-                              Map to menu item
-                            </label>
-                            <select
-                              id={`menu-${ex.id}`}
-                              value={selectedMenuItemId[ex.id] ?? ""}
-                              onChange={(e) =>
-                                setSelectedMenuItemId((curr) => ({
-                                  ...curr,
-                                  [ex.id]: e.target.value,
-                                }))
-                              }
-                              disabled={menuItems.length === 0 || isResolving}
-                              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-                            >
-                              {menuItems.length === 0 ? (
-                                <option value="">No menu items for this day</option>
-                              ) : (
-                                menuItems.map((item) => (
-                                  <option key={item.id} value={item.id}>
-                                    {item.canonical_name}
-                                  </option>
-                                ))
+                            {/* ── Imported value ── */}
+                            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+                              Imported value
+                            </p>
+                            <p className="mb-4 rounded bg-zinc-100 px-3 py-2 font-mono text-sm text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200">
+                              {ex.raw_value}
+                            </p>
+
+                            {/* ── Menu item selector ── */}
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                              <label
+                                htmlFor={`menu-${ex.id}`}
+                                className="text-sm font-medium text-zinc-700 dark:text-zinc-300"
+                              >
+                                Select matching menu item
+                              </label>
+                              {/* Menu source indicator */}
+                              {menuItems.length > 0 && (
+                                <span
+                                  className={`shrink-0 rounded-full border px-2 py-0.5 text-xs ${
+                                    menuItems[0]?.menuSource === "assigned"
+                                      ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400"
+                                      : "border-zinc-200 bg-zinc-100 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400"
+                                  }`}
+                                >
+                                  {menuItems[0]?.menuSource === "assigned"
+                                    ? "Assigned menu"
+                                    : "General menu"}
+                                </span>
                               )}
-                            </select>
+                            </div>
+
+                            {menuItems.length === 0 ? (
+                              <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                                No menu items found for this customer/week. The customer may not
+                                yet be assigned to a published menu — go to{" "}
+                                <a
+                                  href="/assignments"
+                                  className="underline hover:text-amber-900 dark:hover:text-amber-200"
+                                >
+                                  Assignments
+                                </a>{" "}
+                                to assign them.
+                              </p>
+                            ) : (
+                              <>
+                                {/* Search filter */}
+                                <input
+                                  type="text"
+                                  placeholder="Search by name or day…"
+                                  value={menuItemSearch[ex.id] ?? ""}
+                                  onChange={(e) =>
+                                    setMenuItemSearch((curr) => ({
+                                      ...curr,
+                                      [ex.id]: e.target.value,
+                                    }))
+                                  }
+                                  disabled={isResolving}
+                                  className="mb-2 w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:placeholder-zinc-500"
+                                />
+
+                                {(() => {
+                                  const exDay = serviceDayToAvonDay(ex.service_day);
+                                  const searchTerm = menuItemSearch[ex.id] ?? "";
+                                  const normSearch = normalize(searchTerm);
+
+                                  // Sort: exception's service-day items first,
+                                  // then the remaining days in Mon–Fri order.
+                                  const DAY_ORDER: Record<string, number> = {
+                                    Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4,
+                                  };
+                                  const sorted = [...menuItems].sort((a, b) => {
+                                    const aMatch = a.day_of_week === exDay ? 0 : 1;
+                                    const bMatch = b.day_of_week === exDay ? 0 : 1;
+                                    if (aMatch !== bMatch) return aMatch - bMatch;
+                                    return (
+                                      (DAY_ORDER[a.day_of_week] ?? 99) -
+                                      (DAY_ORDER[b.day_of_week] ?? 99)
+                                    );
+                                  });
+
+                                  const filtered = searchTerm
+                                    ? sorted.filter(
+                                        (item) =>
+                                          item.canonical_name
+                                            .toLowerCase()
+                                            .includes(searchTerm.toLowerCase()) ||
+                                          normalize(item.canonical_name).includes(normSearch) ||
+                                          item.day_of_week
+                                            .toLowerCase()
+                                            .includes(searchTerm.toLowerCase()),
+                                      )
+                                    : sorted;
+
+                                  return filtered.length === 0 ? (
+                                    <p className="text-sm text-zinc-400 dark:text-zinc-500">
+                                      No items match &ldquo;{searchTerm}&rdquo;.{" "}
+                                      <button
+                                        type="button"
+                                        className="underline"
+                                        onClick={() =>
+                                          setMenuItemSearch((curr) => ({
+                                            ...curr,
+                                            [ex.id]: "",
+                                          }))
+                                        }
+                                      >
+                                        Clear search
+                                      </button>{" "}
+                                      to see all items.
+                                    </p>
+                                  ) : (
+                                    <select
+                                      id={`menu-${ex.id}`}
+                                      value={selectedMenuItemId[ex.id] ?? ""}
+                                      onChange={(e) =>
+                                        setSelectedMenuItemId((curr) => ({
+                                          ...curr,
+                                          [ex.id]: e.target.value,
+                                        }))
+                                      }
+                                      disabled={isResolving}
+                                      className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
+                                      size={Math.min(filtered.length, 6)}
+                                    >
+                                      {filtered.map((item) => (
+                                        <option key={item.id} value={item.id}>
+                                          {item.canonical_name} — {item.day_of_week}
+                                          {item.day_of_week === exDay ? " ✓" : ""}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  );
+                                })()}
+                              </>
+                            )}
                           </div>
 
                           {/* Save as alias (meal exceptions only) */}
-                          <label className="mt-3 flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
-                            <input
-                              type="checkbox"
-                              checked={saveAsAlias[ex.id] ?? false}
-                              onChange={(e) =>
-                                setSaveAsAlias((curr) => ({
-                                  ...curr,
-                                  [ex.id]: e.target.checked,
-                                }))
-                              }
-                              disabled={isResolving}
-                              className="rounded border-zinc-300 dark:border-zinc-600"
-                            />
-                            Save as alias
-                          </label>
+                          {menuItems.length > 0 && (
+                            <label className="mt-3 flex items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
+                              <input
+                                type="checkbox"
+                                checked={saveAsAlias[ex.id] ?? false}
+                                onChange={(e) =>
+                                  setSaveAsAlias((curr) => ({
+                                    ...curr,
+                                    [ex.id]: e.target.checked,
+                                  }))
+                                }
+                                disabled={isResolving}
+                                className="rounded border-zinc-300 dark:border-zinc-600"
+                              />
+                              Save as alias (future uploads will match automatically)
+                            </label>
+                          )}
                         </>
                       )}
 
@@ -734,7 +1011,7 @@ function ExceptionsContent() {
                             isResolving ||
                             (isProtein
                               ? !selectedProteinName[ex.id]
-                              : !selectedMenuItemId[ex.id])
+                              : !selectedMenuItemId[ex.id] || menuItems.length === 0)
                           }
                           onClick={() => handleResolve(ex, "map")}
                           className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
@@ -757,6 +1034,18 @@ function ExceptionsContent() {
                         >
                           Accept as-is
                         </button>
+                        {/* Protein-only: permanently mark this meal as protein not required */}
+                        {isProtein && (
+                          <button
+                            type="button"
+                            disabled={isResolving}
+                            onClick={() => handleMarkNotRequired(ex)}
+                            className="rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-900/40"
+                            title="Updates the menu item — future uploads for this meal will not require protein"
+                          >
+                            Mark protein not required
+                          </button>
+                        )}
                       </div>
                     </>
                   )}
