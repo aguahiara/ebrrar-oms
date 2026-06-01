@@ -23,6 +23,10 @@
  *          so that "Okro Soup + Eba + Fish" yields three separate parts.
  *   §5  — Protein aliases: "assorted" → "Assorted Meat", "goat" → "Goat Meat",
  *          "cow meat" → "Beef", "boiled egg" → "Egg", etc.
+ *   §10 — No-protein annotations ("(No Extra Protein)", "(No Protein)", etc.)
+ *          in either the order text or the menu item name indicate that protein
+ *          is not required — no exception, no release blocker.  The phrase is
+ *          stripped before matching so it does not interfere with menu lookup.
  */
 
 // ── Separator patterns ────────────────────────────────────────────────────────
@@ -287,6 +291,56 @@ export function resolveProteinAlias(lower: string): string {
     if (lower.startsWith(key + " ")) return canonical.toLowerCase();
   }
   return lower;
+}
+
+// ── No-protein annotation detection / stripping ───────────────────────────────
+
+/**
+ * Detects no-protein annotation phrases (case-insensitive, with or without
+ * surrounding parentheses).  Used for `.test()` only — no `g` flag so
+ * `lastIndex` is never mutated (Business Rule §10).
+ *
+ * Recognised phrases:
+ *   (No Extra Protein)         No Extra Protein
+ *   (No Additional Protein)    No Additional Protein
+ *   (No Protein)               No Protein
+ *   (Without Protein)          Without Protein
+ */
+const NO_PROTEIN_TEST_RE =
+  /\(?\s*(?:no\s+extra\s+protein|no\s+additional\s+protein|no\s+protein|without\s+protein)\s*\)?/i;
+
+/**
+ * Same pattern with the `g` flag — used for `String.replace()` to strip ALL
+ * occurrences from a string (e.g. both a menu-item suffix AND an add-on token
+ * could contain the phrase in the same string).
+ */
+const NO_PROTEIN_STRIP_RE =
+  /\(?\s*(?:no\s+extra\s+protein|no\s+additional\s+protein|no\s+protein|without\s+protein)\s*\)?/gi;
+
+/**
+ * Return true when the text contains any no-protein annotation phrase.
+ *
+ * Handles: "(No Extra Protein)", "No Protein", "(No Additional Protein)",
+ *          "(Without Protein)" — with or without enclosing parentheses and
+ *          regardless of capitalisation.
+ */
+export function hasNoProteinAnnotation(text: string): boolean {
+  return NO_PROTEIN_TEST_RE.test(text);
+}
+
+/**
+ * Strip all no-protein annotation phrases from `text`, then collapse
+ * consecutive whitespace and trim.
+ *
+ * Used to clean order text and menu item canonical names before menu matching
+ * so that the annotation does not appear as a spurious word in the match key.
+ *
+ * Example:
+ *   "Pottage Beans with Dodo (No Extra Protein)" → "Pottage Beans with Dodo"
+ *   "Jollof Rice (No Protein)"                  → "Jollof Rice"
+ */
+export function stripNoProteinAnnotation(text: string): string {
+  return text.replace(NO_PROTEIN_STRIP_RE, " ").replace(/\s+/g, " ").trim();
 }
 
 // ── Add-on classification ─────────────────────────────────────────────────────

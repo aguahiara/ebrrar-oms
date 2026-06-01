@@ -1,7 +1,12 @@
 import { addCalendarDays } from "@/lib/calendar-date";
 import { canonicalizeVocab, decomposeMeal } from "@/lib/decompose";
 import { matchMeal, type MenuItemAliasForMatch } from "@/lib/matchMeal";
-import { isNoLunchEntry, parseOrderText } from "@/lib/parse-order";
+import {
+  hasNoProteinAnnotation,
+  isNoLunchEntry,
+  parseOrderText,
+  stripNoProteinAnnotation,
+} from "@/lib/parse-order";
 import type { AvonMenuItem, MenuVocabItem } from "@/lib/avon-menu";
 import type { DayOfWeek, OrderRecord } from "@/lib/order-types";
 import { supabase } from "@/lib/supabase";
@@ -270,9 +275,22 @@ export async function resolveOrders(
         };
       }
 
+      // ── No-protein annotation (Business Rule §10) ────────────────────────
+      // Detect "(No Extra Protein)" / "(No Protein)" / "Without Protein" etc.
+      // in the raw order text.  When found:
+      //   • strip the phrase before decomposing so it does not interfere with
+      //     menu matching (the phrase appears as spurious words once parens are
+      //     stripped by normalize()).
+      //   • mark proteinRequirement = "not_required" on the resolved order so
+      //     no protein exception is created and no release blocker fires.
+      const orderNoProtein = hasNoProteinAnnotation(order.rawMealText);
+      const effectiveMealText = orderNoProtein
+        ? stripNoProteinAnnotation(order.rawMealText)
+        : order.rawMealText;
+
       // ── Decompose: separator-based parsing (Business Rules §1-§8) ──────────
       const decomposed = decomposeMeal(
-        order.rawMealText,
+        effectiveMealText,
         dayProteins,
         daySwallows,
       );
@@ -318,10 +336,12 @@ export async function resolveOrders(
 
       // ── Dev diagnostic: log parsed components ─────────────────────────────
       if (process.env.NODE_ENV === "development") {
-        const { mainMeal, addOns } = parseOrderText(order.rawMealText);
+        const { mainMeal, addOns } = parseOrderText(effectiveMealText);
         console.log("[resolveOrders] parsed", {
-          employee:     order.employeeName,
-          raw:          order.rawMealText,
+          employee:        order.employeeName,
+          raw:             order.rawMealText,
+          effectiveText:   orderNoProtein ? effectiveMealText : undefined,
+          orderNoProtein:  orderNoProtein || undefined,
           mainMeal,
           addOns,
           mealRemainder,
@@ -337,12 +357,26 @@ export async function resolveOrders(
       if (result.matchType !== null) {
         const matchedItem = dayItems.find((item) => item.id === result.itemId);
 
+        // ── Protein requirement — order annotation takes priority, then menu
+        //    item annotation, then the stored protein_requirement field.
+        // "No Extra Protein" / "(No Protein)" in either the order text or the
+        // menu item's canonical name means protein is not required (§10).
+        const menuItemNoProtein =
+          matchedItem !== undefined &&
+          hasNoProteinAnnotation(matchedItem.canonical_name);
+
+        const resolvedProteinRequirement: "required" | "optional" | "not_required" =
+          orderNoProtein || menuItemNoProtein
+            ? "not_required"
+            : (matchedItem?.protein_requirement ?? "required");
+
         if (process.env.NODE_ENV === "development") {
           console.log("[resolveOrders] matched", {
             employee:    order.employeeName,
             mealRemainder,
             matchType:   result.matchType,
             matchedItem: matchedItem?.canonical_name ?? result.itemId,
+            resolvedProteinRequirement,
           });
         }
 
@@ -358,7 +392,7 @@ export async function resolveOrders(
           sideItems,
           mealCore: mealRemainder,
           proteinExpected,
-          proteinRequirement: matchedItem?.protein_requirement ?? "required",
+          proteinRequirement: resolvedProteinRequirement,
         };
       }
 
@@ -383,8 +417,10 @@ export async function resolveOrders(
         sideItems,
         mealCore: mealRemainder,
         proteinExpected,
-        // Unmatched — protein_requirement is unknown until the operator resolves.
-        proteinRequirement: null,
+        // When the order text carries a no-protein annotation, record it even
+        // for unmatched orders so persistUpload does not create a protein
+        // exception when the operator resolves the meal-not-on-menu exception.
+        proteinRequirement: orderNoProtein ? "not_required" : null,
       };
     }),
   );

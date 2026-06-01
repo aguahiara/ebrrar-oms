@@ -1,5 +1,5 @@
 import { distance } from "fastest-levenshtein";
-import { extractMainMeal } from "@/lib/parse-order";
+import { extractMainMeal, stripNoProteinAnnotation } from "@/lib/parse-order";
 
 /** Menu item row scoped to the customer + service day being matched. */
 export type MenuItemForMatch = {
@@ -87,17 +87,20 @@ function similarityRatio(a: string, b: string): number {
 /**
  * Derive the normalized main-meal key for a menu item canonical name.
  *
- * Extracts the text before the first `+` / `with` / `and` separator, then
- * applies normalize() for consistent comparison with the mealRemainder that
- * decomposeMeal produces.
+ * Strips any no-protein annotation before extracting the main meal so that
+ * "(No Extra Protein)" etc. in the canonical name do not appear as spurious
+ * words in the comparison key.  Then extracts the portion before the first
+ * `+` / `with` / `and` separator and applies normalize().
  *
  * Examples:
- *   "Jollof Rice + Moi Moi"   → "jollof rice"
- *   "Okro Soup with Swallow"  → "okro soup"
- *   "Egusi Soup"              → "egusi soup"
+ *   "Jollof Rice + Moi Moi"                         → "jollof rice"
+ *   "Okro Soup with Swallow"                         → "okro soup"
+ *   "Egusi Soup"                                     → "egusi soup"
+ *   "Pottage Beans with Dodo (No Extra Protein)"     → "pottage beans"
+ *   "Jollof Rice (No Protein)"                       → "jollof rice"
  */
 function menuItemMainMealKey(canonicalName: string): string {
-  return normalize(extractMainMeal(canonicalName));
+  return normalize(extractMainMeal(stripNoProteinAnnotation(canonicalName)));
 }
 
 /**
@@ -127,8 +130,11 @@ export async function matchMeal(
   const itemIds = new Set(menuItems.map((item) => item.id));
 
   // ── Step 1: exact match on full normalized canonical name ─────────────────
+  // Strip no-protein annotation before normalizing so that a menu item named
+  // "Jollof Rice (No Protein)" is still compared as "jollof rice", matching
+  // an order whose raw text was also stripped before calling matchMeal.
   for (const item of menuItems) {
-    if (normalize(item.canonical_name) === normalizedRaw) {
+    if (normalize(stripNoProteinAnnotation(item.canonical_name)) === normalizedRaw) {
       return { itemId: item.id, matchType: "Direct" };
     }
   }
