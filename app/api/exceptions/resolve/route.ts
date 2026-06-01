@@ -125,18 +125,83 @@ async function resolveOne(params: {
   if (action === "map") {
     if (!menuItemId) throw new Error("menuItemId is required for Map action.");
 
-    const { error: lineError } = await supabase.from("order_line").insert({
-      order_batch_id: exception.order_batch_id,
-      customer_id: exception.customer_id,
-      service_day: exception.service_day,
-      menu_item_id: menuItemId,
-      meal_name_raw: exception.raw_value,
-      employee_ref: exception.employee_ref,
-      quantity: 1,
-      match_type: "Direct",
-    });
+    // Select the new row's id back so we can update protein_name if needed.
+    const { data: newLine, error: lineError } = await supabase
+      .from("order_line")
+      .insert({
+        order_batch_id: exception.order_batch_id,
+        customer_id: exception.customer_id,
+        service_day: exception.service_day,
+        menu_item_id: menuItemId,
+        meal_name_raw: exception.raw_value,
+        employee_ref: exception.employee_ref,
+        quantity: 1,
+        match_type: "Direct",
+      })
+      .select("id")
+      .single();
     if (lineError)
       throw new Error(`Failed to insert order line: ${lineError.message}`);
+
+    // ── Post-map protein handling ──────────────────────────────────────────
+    // The new order_line has protein_name = null.  Check the mapped menu
+    // item's protein_requirement so Order Review and the Exceptions page
+    // always agree.
+    //
+    //   • required    → create a new "Protein not recognised" exception so the
+    //                   operator has a resolution path in the Exceptions page.
+    //                   Without this the dashboard would show "Missing Protein"
+    //                   but the Exceptions page would be empty — a dead end.
+    //
+    //   • optional /
+    //     not_required → write "(No protein)" sentinel immediately so Guard 4
+    //                   is not triggered and release is not blocked.
+    const { data: mappedItem } = await supabase
+      .from("menu_item")
+      .select("protein_requirement")
+      .eq("id", menuItemId)
+      .maybeSingle();
+
+    const mappedProteinReq =
+      (mappedItem as { protein_requirement?: string } | null)
+        ?.protein_requirement ?? "required";
+
+    if (mappedProteinReq === "required") {
+      // Protein is required — surface a protein exception so the operator
+      // can see and resolve it from the Exceptions page.
+      const { error: proteinExErr } = await supabase
+        .from("order_exception")
+        .insert({
+          order_batch_id: exception.order_batch_id,
+          customer_id: exception.customer_id,
+          service_day: exception.service_day,
+          raw_value: exception.raw_value,
+          // meal_core: null — the meal exception did not store a raw protein
+          // value, so the operator will select protein from the vocabulary.
+          meal_core: null,
+          employee_ref: exception.employee_ref,
+          exception_type: PROTEIN_EXCEPTION_TYPE,
+          suggested_item_id: null,
+          suggested_score: null,
+          status: "Open",
+        });
+      if (proteinExErr)
+        throw new Error(
+          `Failed to create protein exception after map: ${proteinExErr.message}`,
+        );
+    } else {
+      // Protein is optional or not required — clear the null immediately.
+      if (newLine?.id) {
+        const { error: proClearErr } = await supabase
+          .from("order_line")
+          .update({ protein_name: "(No protein)" })
+          .eq("id", newLine.id);
+        if (proClearErr)
+          throw new Error(
+            `Failed to set no-protein on mapped order line: ${proClearErr.message}`,
+          );
+      }
+    }
 
     const { error: updateError } = await supabase
       .from("order_exception")

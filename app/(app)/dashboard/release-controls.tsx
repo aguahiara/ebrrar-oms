@@ -214,7 +214,18 @@ export function CustomerCard({
   // exclude that case.  Missing protein IS handled: the route writes
   // "(No protein)" to every null-protein order_line as part of the bulk accept,
   // so hasMissingProtein no longer prevents this path.
-  const canAcceptAllAndRelease = hasOpenExceptions && !hasUnmatched;
+  //
+  // We also offer this path when the ONLY remaining blocker is missing protein
+  // with no open exceptions.  This covers the edge-case where mapping a "Meal
+  // not on menu" exception was performed before the protein-exception fix was
+  // deployed, leaving null-protein order_lines with no open exception to
+  // resolve.  The route's protein-clear step handles both cases identically.
+  const canAcceptAllAndRelease =
+    !hasUnmatched && (hasOpenExceptions || hasMissingProtein);
+
+  // True when protein is the sole remaining blocker (no open exceptions).
+  // Used to show more precise UI copy in the confirmation panel.
+  const proteinOnlyBlocker = hasMissingProtein && !hasOpenExceptions && !hasUnmatched;
 
   const revokeReasonValid =
     revokeReasonKey !== "" &&
@@ -447,7 +458,9 @@ export function CustomerCard({
                 onClick={() => setShowReason(true)}
                 className="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
               >
-                Accept all &amp; release…
+                {proteinOnlyBlocker
+                  ? "Release without protein data…"
+                  : "Accept all & release…"}
               </button>
             )}
           </div>
@@ -456,9 +469,23 @@ export function CustomerCard({
           {showReason && (
             <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/40">
               <p className="text-xs text-amber-700 dark:text-amber-400">
-                {card.openExceptionCount} open exception
-                {card.openExceptionCount !== 1 ? "s" : ""} will be accepted
-                as-is. Provide a reason:
+                {proteinOnlyBlocker ? (
+                  <>
+                    <strong>{card.missingProtein}</strong> order line
+                    {card.missingProtein !== 1 ? "s" : ""} missing protein will
+                    be recorded as &ldquo;no protein assigned&rdquo; and the
+                    order will be released.
+                  </>
+                ) : (
+                  <>
+                    <strong>{card.openExceptionCount}</strong> open exception
+                    {card.openExceptionCount !== 1 ? "s" : ""} will be accepted
+                    as-is{hasMissingProtein && (
+                      <>, and <strong>{card.missingProtein}</strong> missing-protein line{card.missingProtein !== 1 ? "s" : ""} will be recorded as &ldquo;no protein assigned&rdquo;</>
+                    )}.
+                  </>
+                )}{" "}
+                Provide a reason:
               </p>
               <input
                 type="text"
