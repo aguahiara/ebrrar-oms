@@ -19,7 +19,7 @@
  *   L  — no swallow at all      → swallow_name = null
  */
 
-import { classifyAddOns, isGenericSwallow, GENERIC_SWALLOW_VALUE, parseOrderText } from "../lib/parse-order.js";
+import { classifyAddOns, classifyForDisplay, isGenericSwallow, GENERIC_SWALLOW_VALUE, parseOrderText } from "../lib/parse-order.js";
 
 // ── Test vocabulary ────────────────────────────────────────────────────────────
 
@@ -281,6 +281,145 @@ assertExplicitColumn("Swallow Option",    GENERIC_SWALLOW_VALUE);
 assertExplicitColumn("Eba",   null);   // vocabulary term handled by canonicalizeVocab
 assertExplicitColumn("Semo",  null);   // vocabulary term handled by canonicalizeVocab
 assertExplicitColumn("",      null);   // empty → null
+
+// ── Multi-separator tests (regression: "Semo with beef" was not split) ────────
+//
+// These reproduce the protein-extraction regression where ADDON_SEP_RE did not
+// include `with`, causing "Semo with Beef" to remain as one undivided token.
+// The fix adds `with` to ADDON_SEP_RE and adds `served with` to PRIMARY_SEP_RE.
+
+console.log("\n── Multi-separator parsing (regression tests) ───────────────────────");
+
+// Test R — "Served with" as main-meal separator, then second "with" splits add-on
+run({
+  label: "R — Edikiankong Soup Served with Semo with beef → swallow=Semo, protein=Beef",
+  rawText: "Edikiankong Soup Served with Semo with beef",
+  expectedSwallow: "Semo",
+  expectedProtein:  "Beef",
+  expectedMainMeal: "Edikiankong Soup",
+});
+
+// Test S — "Dodo with fish": Dodo is a side, Fish is protein
+run({
+  label: "S — Pottage Beans With Dodo with fish → side=Dodo, protein=Fish",
+  rawText: "Pottage Beans With Dodo with fish",
+  expectedSwallow: null,
+  expectedProtein:  "Fish",
+  expectedMainMeal: "Pottage Beans",
+});
+
+// Test T — "Served with" stripping + second "with" splits Eba / Fish
+run({
+  label: "T — Okro Soup Served with Eba with Fish → swallow=Eba, protein=Fish",
+  rawText: "Okro Soup Served with Eba with Fish",
+  expectedSwallow: "Eba",
+  expectedProtein:  "Fish",
+  expectedMainMeal: "Okro Soup",
+});
+
+// Test U — side (Coleslaw) + protein (Chicken) after "Served with"
+run({
+  label: "U — Ebrrar Jollof Rice Served with Coleslaw with Chicken → protein=Chicken",
+  rawText: "Ebrrar Jollof Rice Served with Coleslaw with Chicken",
+  expectedSwallow: null,
+  expectedProtein:  "Chicken",
+  expectedMainMeal: "Ebrrar Jollof Rice",
+});
+
+// Test V — "+" primary separator, second "with" in add-on chain
+run({
+  label: "V — White Rice + Dodo + Spicy Asun Sauce with Beef → protein=Beef",
+  rawText: "White Rice + Dodo + Spicy Asun Sauce with Beef",
+  expectedSwallow: null,
+  expectedProtein:  "Beef",
+  expectedMainMeal: "White Rice",
+});
+
+// Test W — classic "with … and" multi-add-on (already worked; regression guard)
+run({
+  label: "W — Egusi Soup with Semo and Beef → swallow=Semo, protein=Beef",
+  rawText: "Egusi Soup with Semo and Beef",
+  expectedSwallow: "Semo",
+  expectedProtein:  "Beef",
+  expectedMainMeal: "Egusi Soup",
+});
+
+// ── classifyForDisplay tests ──────────────────────────────────────────────────
+
+console.log("\n── classifyForDisplay() ─────────────────────────────────────────────");
+
+function assertDisplay(
+  label: string,
+  rawText: string,
+  expected: {
+    mainMeal: string;
+    swallow: string | null;
+    protein: string | null;
+    sides?: string[];
+    unknownAddOns?: string[];
+  },
+): void {
+  const c = classifyForDisplay(rawText);
+  const mainOk    = c.mainMeal.toLowerCase().trim() === expected.mainMeal.toLowerCase().trim();
+  const swallowOk = c.swallow === expected.swallow;
+  const proteinOk = c.protein === expected.protein;
+  const sidesOk   = expected.sides === undefined ||
+    JSON.stringify(c.sides.map(s => s.toLowerCase())) ===
+    JSON.stringify((expected.sides ?? []).map(s => s.toLowerCase()));
+  const unknownOk = expected.unknownAddOns === undefined ||
+    JSON.stringify(c.unknownAddOns.map(s => s.toLowerCase())) ===
+    JSON.stringify((expected.unknownAddOns ?? []).map(s => s.toLowerCase()));
+
+  const ok = mainOk && swallowOk && proteinOk && sidesOk && unknownOk;
+  if (ok) {
+    console.log(`  ✓  ${label}`);
+    passed += 1;
+  } else {
+    console.error(`  ✗  ${label}`);
+    if (!mainOk)    console.error(`     mainMeal  expected=${JSON.stringify(expected.mainMeal)} got=${JSON.stringify(c.mainMeal)}`);
+    if (!swallowOk) console.error(`     swallow   expected=${JSON.stringify(expected.swallow)} got=${JSON.stringify(c.swallow)}`);
+    if (!proteinOk) console.error(`     protein   expected=${JSON.stringify(expected.protein)} got=${JSON.stringify(c.protein)}`);
+    if (!sidesOk)   console.error(`     sides     expected=${JSON.stringify(expected.sides)} got=${JSON.stringify(c.sides)}`);
+    if (!unknownOk) console.error(`     unknowns  expected=${JSON.stringify(expected.unknownAddOns)} got=${JSON.stringify(c.unknownAddOns)}`);
+    failed += 1;
+  }
+}
+
+assertDisplay(
+  "display: Edikiankong Soup Served with Semo with beef",
+  "Edikiankong Soup Served with Semo with beef",
+  { mainMeal: "Edikiankong Soup", swallow: "Semo", protein: "Beef" },
+);
+
+assertDisplay(
+  "display: Pottage Beans With Dodo with fish",
+  "Pottage Beans With Dodo with fish",
+  { mainMeal: "Pottage Beans", swallow: null, protein: "Fish", sides: ["Dodo"] },
+);
+
+assertDisplay(
+  "display: Jollof Rice Served with Coleslaw with Chicken",
+  "Jollof Rice Served with Coleslaw with Chicken",
+  { mainMeal: "Jollof Rice", swallow: null, protein: "Chicken", sides: ["Coleslaw"] },
+);
+
+assertDisplay(
+  "display: White Rice + Dodo + Spicy Asun Sauce with Beef",
+  "White Rice + Dodo + Spicy Asun Sauce with Beef",
+  { mainMeal: "White Rice", swallow: null, protein: "Beef", sides: ["Dodo"], unknownAddOns: ["Spicy Asun Sauce"] },
+);
+
+assertDisplay(
+  "display: Okro Soup with Eba with Fish",
+  "Okro Soup with Eba with Fish",
+  { mainMeal: "Okro Soup", swallow: "Eba", protein: "Fish" },
+);
+
+assertDisplay(
+  "display: Egusi Soup (no separator) → hasSeparator=false",
+  "Egusi Soup",
+  { mainMeal: "Egusi Soup", swallow: null, protein: null },
+);
 
 // ── Summary ───────────────────────────────────────────────────────────────────
 

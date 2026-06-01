@@ -32,10 +32,23 @@
 // ── Separator patterns ────────────────────────────────────────────────────────
 
 /**
- * Primary separators: `+` and `with` (case-insensitive, surrounded by
- * optional whitespace).  These always split main meal from add-ons.
+ * Primary separators used to split the main meal from its add-ons.
+ *
+ * Alternatives (tried left-to-right at each string position — leftmost wins):
+ *   1. `+`              — explicit add-on marker.
+ *   2. `served with`    — service phrase used in many customer uploads:
+ *                         "Edikiankong Soup Served with Semo with Beef".
+ *                         Because the regex engine finds the LEFTMOST match,
+ *                         " Served with " is found before the plain " with "
+ *                         that comes later in the same string, which cleanly
+ *                         separates the main meal ("Edikiankong Soup") from
+ *                         the add-on portion ("Semo with Beef").
+ *   3. `with`           — plain meal/add-on separator.
+ *
+ * Note: `and` is intentionally excluded here; it is a weaker separator
+ * handled separately by AND_SEP_RE only when no primary separator is found.
  */
-const PRIMARY_SEP_RE = /\s*\+\s*|\s+with\s+/i;
+const PRIMARY_SEP_RE = /\s*\+\s*|\s+served\s+with\s+|\s+with\s+/i;
 
 /**
  * Secondary separator: `and` (case-insensitive, surrounded by required
@@ -46,14 +59,23 @@ const AND_SEP_RE = /\s+and\s+/gi;
 
 /**
  * Used to split the add-on portion into individual tokens.
- * Both `+` and `and` act as add-on separators.  `with` is intentionally
- * excluded here because it is consumed as the primary separator already.
+ * `+`, `with`, and `and` all act as add-on separators.
  *
- * Handles: "Eba + Fish" → ["Eba","Fish"]
- *          "Semo and Beef" → ["Semo","Beef"]
- *          "Eba + Fish and Beef" → ["Eba","Fish","Beef"]
+ * IMPORTANT: `with` IS included here, unlike the old implementation.
+ * After the primary split, any remaining `with` inside the add-on string
+ * must also be treated as a token boundary.  Without this, a phrase like
+ * "Semo with Beef" would remain as a single undivided token and "Beef"
+ * would never be extracted as a protein.
+ *
+ * Examples:
+ *   "Semo with Beef"         → ["Semo", "Beef"]
+ *   "Dodo with Fish"         → ["Dodo", "Fish"]
+ *   "Eba + Fish"             → ["Eba", "Fish"]
+ *   "Semo and Beef"          → ["Semo", "Beef"]
+ *   "Eba + Fish and Beef"    → ["Eba", "Fish", "Beef"]
+ *   "Coleslaw with Chicken"  → ["Coleslaw", "Chicken"]
  */
-const ADDON_SEP_RE = /\s*\+\s*|\s+and\s+/gi;
+const ADDON_SEP_RE = /\s*\+\s*|\s+with\s+|\s+and\s+/gi;
 
 // ── No-lunch / skip detection ─────────────────────────────────────────────────
 
@@ -176,11 +198,14 @@ export type ParsedOrderText = {
  *     is present; within the add-on list `and` always splits further.
  *
  * Examples:
- *   "Jollof Rice + Dodo"              → { main: "Jollof Rice", addOns: ["Dodo"] }
- *   "Jollof Rice with Chicken"        → { main: "Jollof Rice", addOns: ["Chicken"] }
- *   "Okro Soup and Eba"               → { main: "Okro Soup",   addOns: ["Eba"] }
- *   "Egusi Soup with Beef and Semo"   → { main: "Egusi Soup",  addOns: ["Beef","Semo"] }
- *   "Jollof Rice"                     → { main: "Jollof Rice", addOns: [], hasSeparator: false }
+ *   "Jollof Rice + Dodo"                        → { main: "Jollof Rice", addOns: ["Dodo"] }
+ *   "Jollof Rice with Chicken"                  → { main: "Jollof Rice", addOns: ["Chicken"] }
+ *   "Okro Soup and Eba"                         → { main: "Okro Soup",   addOns: ["Eba"] }
+ *   "Egusi Soup with Beef and Semo"             → { main: "Egusi Soup",  addOns: ["Beef","Semo"] }
+ *   "Edikiankong Soup Served with Semo with Beef"
+ *                                               → { main: "Edikiankong Soup", addOns: ["Semo","Beef"] }
+ *   "Pottage Beans with Dodo with Fish"         → { main: "Pottage Beans",   addOns: ["Dodo","Fish"] }
+ *   "Jollof Rice"                               → { main: "Jollof Rice", addOns: [], hasSeparator: false }
  */
 export function parseOrderText(text: string): ParsedOrderText {
   const cleaned = text.trim().replace(/\s+/g, " ");
@@ -206,10 +231,13 @@ export function parseOrderText(text: string): ParsedOrderText {
     }
   }
 
-  // ── Split add-on portion on `+` and `and` ────────────────────────────────
-  // Using ADDON_SEP_RE (not AND_SEP_RE) so that "Eba + Fish" and "Semo and
-  // Beef" each yield two tokens.  `with` is intentionally excluded here
-  // because it is already consumed as the primary separator above.
+  // ── Split add-on portion on `+`, `with`, and `and` ──────────────────────
+  // Using ADDON_SEP_RE so that "Eba + Fish", "Semo with Beef", "Eba and
+  // Chicken", and combinations thereof each yield separate tokens.
+  // `with` IS included (unlike older versions) because the primary split
+  // only consumed the FIRST separator — any remaining `with` occurrences
+  // in the add-on string must also be treated as token boundaries so that
+  // "Semo with Beef" → ["Semo","Beef"] and "Dodo with Fish" → ["Dodo","Fish"].
   ADDON_SEP_RE.lastIndex = 0;
   const addOns = restRaw
     ? restRaw.split(ADDON_SEP_RE).map((s) => s.trim()).filter(Boolean)
@@ -269,6 +297,19 @@ const PROTEIN_ALIAS_MAP: Readonly<Record<string, string>> = {
   "cow meat":           "Beef",
   "cowmeat":            "Beef",
   "cow":                "Beef",
+  // Cowleg space-variant normalisation
+  "cow leg":            "Cowleg",
+  "cow-leg":            "Cowleg",
+  // Ponmo alternate spellings
+  "pomo":               "Ponmo",
+  "pmomo":              "Ponmo",
+  // Plural fish/seafood forms → singular canonical
+  "prawns":             "Prawn",
+  "shrimps":            "Shrimp",
+  // Verbose fish names → canonical
+  "titus fish":         "Titus",
+  "croaker fish":       "Croaker",
+  "hake fish":          "Hake",
   // Egg variants
   "boiled egg":         "Egg",
   "fried egg":          "Egg",
@@ -463,4 +504,100 @@ export function classifyAddOns(
   }
 
   return { proteinName, swallowName, sideNames };
+}
+
+// ── Known static vocabularies (for UI display classification) ─────────────────
+//
+// These lists are used by `classifyForDisplay` on the Exceptions page so that
+// add-on tokens can be labelled "Protein / Swallow / Side / Add-on" without
+// fetching per-day vocabulary from the database.
+//
+// They are NOT authoritative for production processing — resolveOrders always
+// uses the per-day database vocabulary from protein_option / swallow_option.
+// These lists are intentionally conservative: they include only names that are
+// almost universally correct across all customers.
+
+export const KNOWN_PROTEIN_NAMES: readonly string[] = [
+  "Chicken", "Beef", "Fish", "Turkey", "Goat Meat", "Assorted Meat",
+  "Ponmo", "Egg", "Cowleg", "Titus", "Croaker", "Hake", "Gizzard",
+  "Snail", "Prawn", "Shrimp", "Sausage", "Liver", "Kidney",
+];
+
+export const KNOWN_SWALLOW_NAMES: readonly string[] = [
+  "Eba", "Semo", "Semovita", "Poundo", "Pounded Yam", "Wheat", "Amala", "Fufu",
+];
+
+export const KNOWN_SIDE_NAMES: readonly string[] = [
+  "Dodo", "Plantain", "Moi Moi", "Moin Moin", "Coleslaw", "Salad", "Vegetables",
+];
+
+// ── classifyForDisplay ────────────────────────────────────────────────────────
+
+export type ClassifiedDisplay = {
+  /** Extracted main meal (before the first separator). */
+  mainMeal: string;
+  /** Recognised swallow name, or null if none found. */
+  swallow: string | null;
+  /** Recognised protein name, or null if none found. */
+  protein: string | null;
+  /** Recognised side-dish names (Dodo, Plantain, Moi Moi, Coleslaw, …). */
+  sides: string[];
+  /** Add-ons that were not recognised as protein, swallow, or side. */
+  unknownAddOns: string[];
+  /** False when no separator was present (no add-ons were found). */
+  hasSeparator: boolean;
+};
+
+/**
+ * Parse and classify a raw order string for display purposes.
+ *
+ * Uses the static KNOWN_* vocabulary lists (not the per-day database vocabulary)
+ * so it can be called from client components without a database fetch.
+ *
+ * The result is used exclusively for labelling add-ons in the Exceptions page
+ * parsed-breakdown panel.  All production logic continues to use the
+ * authoritative per-day vocabulary from resolveOrders / decomposeMeal.
+ */
+export function classifyForDisplay(rawText: string): ClassifiedDisplay {
+  const { mainMeal, addOns, hasSeparator } = parseOrderText(rawText);
+
+  if (!hasSeparator || addOns.length === 0) {
+    return {
+      mainMeal,
+      swallow: null,
+      protein: null,
+      sides: [],
+      unknownAddOns: [],
+      hasSeparator,
+    };
+  }
+
+  // Classify against known static vocabularies (Garri/Gari aliases included).
+  const { proteinName, swallowName, sideNames } = classifyAddOns(
+    addOns,
+    [...KNOWN_PROTEIN_NAMES],
+    [...KNOWN_SWALLOW_NAMES, "Garri", "Gari"],
+  );
+
+  // Separate recognised side names from truly unrecognised add-ons.
+  const knownSideLower = new Set(KNOWN_SIDE_NAMES.map((s) => s.toLowerCase()));
+  const sides: string[] = [];
+  const unknownAddOns: string[] = [];
+
+  for (const s of sideNames) {
+    if (knownSideLower.has(s.toLowerCase())) {
+      sides.push(s);
+    } else {
+      unknownAddOns.push(s);
+    }
+  }
+
+  return {
+    mainMeal,
+    swallow: swallowName,
+    protein: proteinName,
+    sides,
+    unknownAddOns,
+    hasSeparator,
+  };
 }

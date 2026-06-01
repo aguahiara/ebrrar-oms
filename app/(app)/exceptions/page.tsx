@@ -19,7 +19,7 @@ import {
 import { DEFAULT_SERVICE_DAY, formatServiceDayLabel } from "@/lib/avon-dashboard";
 import { PROTEIN_EXCEPTION_TYPE } from "@/lib/avon-orders";
 import { normalize } from "@/lib/matchMeal";
-import { parseOrderText } from "@/lib/parse-order";
+import { classifyForDisplay } from "@/lib/parse-order";
 import type { AvonMenuItem } from "@/lib/avon-menu";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -659,12 +659,11 @@ function ExceptionsContent() {
                       Raw: &quot;{ex.raw_value}&quot;
                     </p>
 
-                    {/* Parsed breakdown — show how the system split the order */}
+                    {/* Parsed breakdown — show how the system split and classified the order */}
                     {(() => {
-                      const parsed = parseOrderText(ex.raw_value);
-                      if (!parsed.hasSeparator && parsed.addOns.length === 0) {
-                        // No separator — show the main meal extract from meal_core
-                        // (which is the normalised main meal stored at upload time).
+                      const c = classifyForDisplay(ex.raw_value);
+                      if (!c.hasSeparator) {
+                        // No separator — show the meal core stored at upload time.
                         if (!isProtein && ex.meal_core && ex.meal_core !== ex.raw_value.toLowerCase()) {
                           return (
                             <p className="text-zinc-500 dark:text-zinc-400 text-xs">
@@ -684,10 +683,28 @@ function ExceptionsContent() {
                           <div className="space-y-0.5">
                             <p className="text-zinc-700 dark:text-zinc-300">
                               <span className="text-zinc-500 dark:text-zinc-400">Main meal: </span>
-                              {parsed.mainMeal}
+                              {c.mainMeal}
                             </p>
-                            {parsed.addOns.map((a, i) => (
-                              <p key={i} className="text-zinc-700 dark:text-zinc-300">
+                            {c.swallow && (
+                              <p className="text-zinc-700 dark:text-zinc-300">
+                                <span className="text-zinc-500 dark:text-zinc-400">Swallow: </span>
+                                {c.swallow}
+                              </p>
+                            )}
+                            {c.protein && (
+                              <p className="text-zinc-700 dark:text-zinc-300">
+                                <span className="text-zinc-500 dark:text-zinc-400">Protein: </span>
+                                {c.protein}
+                              </p>
+                            )}
+                            {c.sides.map((s, i) => (
+                              <p key={`side-${i}`} className="text-zinc-700 dark:text-zinc-300">
+                                <span className="text-zinc-500 dark:text-zinc-400">Side: </span>
+                                {s}
+                              </p>
+                            ))}
+                            {c.unknownAddOns.map((a, i) => (
+                              <p key={`unk-${i}`} className="text-zinc-700 dark:text-zinc-300">
                                 <span className="text-zinc-500 dark:text-zinc-400">Add-on: </span>
                                 {a}
                               </p>
