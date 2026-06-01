@@ -14,6 +14,9 @@
  *   §6  — Garri / Gari are canonicalised to "Eba".
  *   §7  — Add-ons are classified as protein / swallow / side.
  *   §8  — Normalization: lowercase, trim, collapse spaces, strip punctuation.
+ *   §11 — Generic swallow phrases ("with swallow", "+ swallow", etc.) are
+ *          classified as GENERIC_SWALLOW_VALUE ("Not Selected") instead of
+ *          being dropped as unrecognised sides.
  */
 
 // ── Separator patterns ────────────────────────────────────────────────────────
@@ -31,6 +34,50 @@ const PRIMARY_SEP_RE = /\s*\+\s*|\s+with\s+/i;
  * Always used to split multiple add-ons within the add-on portion.
  */
 const AND_SEP_RE = /\s+and\s+/gi;
+
+// ── Generic swallow detection ─────────────────────────────────────────────────
+
+/**
+ * The canonical swallow value written when an order clearly indicates that a
+ * swallow is required but does not specify which type (Business Rule §4/§11).
+ *
+ * Exported so callers (dashboards, tests, kitchen-quantity logic) can compare
+ * against this constant rather than hardcoding the string.
+ */
+export const GENERIC_SWALLOW_VALUE = "Not Selected" as const;
+
+/**
+ * Whole-phrase lower-case tokens that indicate generic ("any") swallow.
+ * Matched against the trimmed, lower-cased add-on token before vocabulary
+ * lookup so that "swallow", "any swallow", "choice of swallow", etc. are
+ * captured as GENERIC_SWALLOW_VALUE instead of falling through to sideNames.
+ */
+const GENERIC_SWALLOW_PHRASES: ReadonlySet<string> = new Set([
+  "swallow",
+  "any swallow",
+  "choice of swallow",
+  "your choice of swallow",
+  "swallow of choice",
+  "with swallow",         // handles oddly-formatted columns that include the separator word
+  "swallow option",
+]);
+
+/**
+ * Return true when a lower-cased, trimmed add-on token is a generic swallow
+ * reference — the customer wants swallow but did not name the type.
+ *
+ * Matches:
+ *   • exact phrases in GENERIC_SWALLOW_PHRASES
+ *   • phrases that *start with* a generic swallow phrase followed by a space
+ *     (handles annotations like "swallow (to be confirmed)")
+ */
+export function isGenericSwallow(lower: string): boolean {
+  if (GENERIC_SWALLOW_PHRASES.has(lower)) return true;
+  for (const phrase of GENERIC_SWALLOW_PHRASES) {
+    if (lower.startsWith(phrase + " ")) return true;
+  }
+  return false;
+}
 
 // ── Garri / Gari → Eba canonicalization ──────────────────────────────────────
 
@@ -192,13 +239,23 @@ export function classifyAddOns(
 
     // ── Swallow check (runs first) ──────────────────────────────────────────
     if (!swallowName) {
-      // Exact match
+      // ── Generic swallow detection (before vocab lookup) ─────────────────
+      // "swallow", "any swallow", "choice of swallow" etc. mean swallow is
+      // required but the specific type was not chosen.  Classify as
+      // GENERIC_SWALLOW_VALUE ("Not Selected") so the kitchen knows swallow
+      // is needed and the totals remain accurate (Business Rule §4 / §11).
+      if (isGenericSwallow(lower)) {
+        swallowName = GENERIC_SWALLOW_VALUE;
+        continue;
+      }
+
+      // Exact match against the day's swallow vocabulary (incl. Garri / Gari).
       const exactSwallow = swallowMap.get(lower);
       if (exactSwallow) {
         swallowName = exactSwallow;
         continue;
       }
-      // Partial / starts-with (handles trailing annotations)
+      // Partial / starts-with (handles trailing annotations like "Eba (extra)").
       let swallowFound = false;
       for (const [key, val] of swallowMap) {
         if (lower.startsWith(key + " ") || lower === key) {
