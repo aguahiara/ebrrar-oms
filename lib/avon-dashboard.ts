@@ -44,7 +44,11 @@ export type CustomerDashboardCard = {
   matchedOrders: number;
   /** Lines where menu_item_id IS NULL (unmatched / unreconciled — should be 0) */
   unmatchedOrders: number;
-  /** Lines where protein_name IS NULL (protein not captured or not matched) */
+  /**
+   * Matched lines where protein_name IS NULL AND menu_item.protein_requirement
+   * = 'required'.  Lines for optional/non-required protein meals are excluded
+   * because they are not a release blocker.
+   */
   missingProtein: number;
   /** Open order_exception rows for this customer + service day */
   openExceptionCount: number;
@@ -64,6 +68,14 @@ export type ConsolidatedDashboard = {
   proteinRows: ConsolidatedRow[];
   grandTotal: number;
   cards: CustomerDashboardCard[];
+  /**
+   * True when order_exception rows exist for this service day but no
+   * order_line rows.  This means orders were uploaded but are still
+   * awaiting exception resolution — none have been mapped into order lines
+   * yet so the dashboard is empty.  Use this flag to show an actionable
+   * empty state instead of the generic "nothing uploaded" message.
+   */
+  unresolvedExceptionsOnly: boolean;
 };
 
 // ─── Pivot helper ─────────────────────────────────────────────────────────────
@@ -114,9 +126,10 @@ export async function fetchConsolidatedDashboard(
       .select(
         `customer_id,
          menu_item_id,
+         match_type,
          protein_name,
          customer ( display_name ),
-         menu_item ( canonical_name, category )`,
+         menu_item ( canonical_name, category, protein_requirement )`,
       )
       .eq("service_day", serviceDay),
 
@@ -215,7 +228,11 @@ export async function fetchConsolidatedDashboard(
     const g = byCustomer.get(custId)!;
     g.totalOrders += 1;
 
-    // Matched = has a menu_item_id
+    // Matched = has a menu_item_id OR is a FruitsOnly line (menu_item_id stays
+    // null for FruitsOnly, but the order is production-ready).
+    const isFruitsOnlyLine =
+      (line as Record<string, unknown>).match_type === "FruitsOnly";
+
     if (line.menu_item_id !== null) {
       g.matchedOrders += 1;
       const mi = Array.isArray(line.menu_item) ? line.menu_item[0] : line.menu_item;
@@ -229,14 +246,38 @@ export async function fetchConsolidatedDashboard(
           ? String(miObj.category)
           : null;
       if (cat) g.categorySet.add(cat);
+    } else if (isFruitsOnlyLine) {
+      // FruitsOnly orders are production-ready; count them as matched and add
+      // a "Fruits Only" label to the meal breakdown.
+      g.matchedOrders += 1;
+      g.mealMap.set("Fruits Only", (g.mealMap.get("Fruits Only") ?? 0) + 1);
     }
 
-    // Protein
+    // Protein — skip the "(No protein)" sentinel used for FruitsOnly and
+    // non-required meals so it doesn't pollute the protein counts table.
     if (line.protein_name) {
       const p = String(line.protein_name);
-      g.proteinMap.set(p, (g.proteinMap.get(p) ?? 0) + 1);
-    } else {
-      g.missingProtein += 1;
+      if (p !== "(No protein)") {
+        g.proteinMap.set(p, (g.proteinMap.get(p) ?? 0) + 1);
+      }
+    } else if (line.menu_item_id !== null) {
+      // Only count as "missing protein" when:
+      //   • the line has a matched menu item (menu_item_id is set), AND
+      //   • that menu item actually requires a protein
+      //     (protein_requirement = 'required').
+      // Unmatched lines are already counted as unmatchedOrders; FruitsOnly
+      // lines (menu_item_id = null) don't need a protein; optional/not_required
+      // meals are intentionally proteinless and should not block release.
+      const mi = Array.isArray(line.menu_item) ? line.menu_item[0] : line.menu_item;
+      const miObj =
+        mi && typeof mi === "object" ? (mi as Record<string, unknown>) : null;
+      const req =
+        miObj && "protein_requirement" in miObj
+          ? String(miObj.protein_requirement)
+          : "required"; // conservative default when join data is missing
+      if (req === "required") {
+        g.missingProtein += 1;
+      }
     }
   }
 
@@ -338,7 +379,219 @@ export async function fetchConsolidatedDashboard(
     c.proteinCounts.map((r) => ({ label: r.protein, total: r.total })),
   );
 
-  return { serviceDay, customers, mealRows, proteinRows, grandTotal, cards };
+  // True when exceptions exist for this day but no order_lines at all.
+  // Happens when all uploaded orders were unmatched (they go to order_exception
+  // only) and none have been resolved via "map" yet (which creates order_lines).
+  const unresolvedExceptionsOnly = byCustomer.size === 0 && allExByCustomer.size > 0;
+
+  return { serviceDay, customers, mealRows, proteinRows, grandTotal, cards, unresolvedExceptionsOnly };
+}
+
+// ─── Production Daily Dashboard types & query ────────────────────────────────
+
+export type ProductionCustomerRow = {
+  customerId: string;
+  customerName: string;
+  releasedAt: string;
+  totalMeals: number;
+  mealCounts: { meal: string; total: number }[];
+  proteinCounts: { protein: string; total: number }[];
+  swallowCounts: { swallow: string; total: number }[];
+};
+
+export type ProductionDailyDashboard = {
+  serviceDay: string;
+  releasedCustomerCount: number;
+  /** Display names of released customers in alphabetical order. */
+  customers: string[];
+  mealRows: ConsolidatedRow[];
+  proteinRows: ConsolidatedRow[];
+  swallowRows: ConsolidatedRow[];
+  grandTotal: number;
+  customerRows: ProductionCustomerRow[];
+};
+
+/**
+ * Production-only view for a service day.
+ *
+ * Only customers with an active (non-revoked) dashboard_release record are
+ * included. Order lines that belong to unreleased customers are ignored, so
+ * this function is safe to render in kitchen-facing views.
+ *
+ * Flow:
+ *   1. Fetch active releases for the day → released customer_id set.
+ *   2. If empty → return an empty dashboard (triggers the "nothing released yet" UI).
+ *   3. Fetch order_line rows for those customers + day (with meal name + customer name joins).
+ *   4. Aggregate meals / proteins / swallows per customer + grand total.
+ *   5. Build consolidated pivot tables (same ConsolidatedRow shape as Order Review).
+ */
+export async function fetchProductionDailyDashboard(
+  serviceDay: string,
+): Promise<ProductionDailyDashboard> {
+  // ── 1. Active releases ───────────────────────────────────────────────────
+  const { data: releases, error: releasesErr } = await supabase
+    .from("dashboard_release")
+    .select("customer_id, released_at")
+    .eq("service_day", serviceDay)
+    .is("revoked_at", null);
+
+  if (releasesErr)
+    throw new Error(`Failed to load releases: ${releasesErr.message}`);
+
+  if (!releases || releases.length === 0) {
+    return {
+      serviceDay,
+      releasedCustomerCount: 0,
+      customers: [],
+      mealRows: [],
+      proteinRows: [],
+      swallowRows: [],
+      grandTotal: 0,
+      customerRows: [],
+    };
+  }
+
+  const releasedCustomerIds = releases.map((r) => r.customer_id as string);
+  const releaseAtById = new Map<string, string>(
+    releases
+      .filter((r) => r.released_at !== null)
+      .map((r) => [r.customer_id as string, r.released_at as string]),
+  );
+
+  // ── 2. Order lines for released customers ────────────────────────────────
+  const { data: lines, error: linesErr } = await supabase
+    .from("order_line")
+    .select(
+      `
+      customer_id,
+      menu_item_id,
+      match_type,
+      protein_name,
+      swallow_name,
+      customer ( display_name ),
+      menu_item ( canonical_name )
+    `,
+    )
+    .eq("service_day", serviceDay)
+    .in("customer_id", releasedCustomerIds);
+
+  if (linesErr)
+    throw new Error(`Failed to load order lines: ${linesErr.message}`);
+
+  // ── 3. Aggregate per customer ────────────────────────────────────────────
+
+  type CustomerAgg = {
+    name: string;
+    totalMeals: number;
+    mealMap: Map<string, number>;
+    proteinMap: Map<string, number>;
+    swallowMap: Map<string, number>;
+  };
+
+  const byCustomer = new Map<string, CustomerAgg>();
+
+  for (const line of lines ?? []) {
+    const custId = line.customer_id as string;
+
+    if (!byCustomer.has(custId)) {
+      const custRel = Array.isArray(line.customer) ? line.customer[0] : line.customer;
+      const name =
+        custRel && typeof custRel === "object" && "display_name" in custRel
+          ? String((custRel as Record<string, unknown>).display_name)
+          : custId;
+
+      byCustomer.set(custId, {
+        name,
+        totalMeals: 0,
+        mealMap: new Map(),
+        proteinMap: new Map(),
+        swallowMap: new Map(),
+      });
+    }
+
+    const g = byCustomer.get(custId)!;
+    g.totalMeals += 1;
+
+    // Meal name — FruitsOnly lines have menu_item_id = null but are still
+    // production-ready meals that should appear in the breakdown.
+    const isProdFruitsOnly =
+      (line as Record<string, unknown>).match_type === "FruitsOnly";
+
+    if (line.menu_item_id !== null) {
+      const mi = Array.isArray(line.menu_item) ? line.menu_item[0] : line.menu_item;
+      const miObj =
+        mi && typeof mi === "object" ? (mi as Record<string, unknown>) : null;
+      const meal =
+        miObj && "canonical_name" in miObj ? String(miObj.canonical_name) : null;
+      if (meal) g.mealMap.set(meal, (g.mealMap.get(meal) ?? 0) + 1);
+    } else if (isProdFruitsOnly) {
+      g.mealMap.set("Fruits Only", (g.mealMap.get("Fruits Only") ?? 0) + 1);
+    }
+
+    // Protein — skip the "(No protein)" sentinel used for FruitsOnly and
+    // non-required meals so it doesn't pollute the protein counts table.
+    if (line.protein_name) {
+      const p = String(line.protein_name);
+      if (p !== "(No protein)") {
+        g.proteinMap.set(p, (g.proteinMap.get(p) ?? 0) + 1);
+      }
+    }
+
+    // Swallow
+    if (line.swallow_name) {
+      const s = String(line.swallow_name);
+      g.swallowMap.set(s, (g.swallowMap.get(s) ?? 0) + 1);
+    }
+  }
+
+  // ── 4. Build customer rows ───────────────────────────────────────────────
+
+  const customerRows: ProductionCustomerRow[] = [];
+
+  for (const [custId, g] of byCustomer) {
+    customerRows.push({
+      customerId: custId,
+      customerName: g.name,
+      releasedAt: releaseAtById.get(custId) ?? "",
+      totalMeals: g.totalMeals,
+      mealCounts: [...g.mealMap.entries()]
+        .map(([meal, total]) => ({ meal, total }))
+        .sort((a, b) => b.total - a.total),
+      proteinCounts: [...g.proteinMap.entries()]
+        .map(([protein, total]) => ({ protein, total }))
+        .sort((a, b) => b.total - a.total),
+      swallowCounts: [...g.swallowMap.entries()]
+        .map(([swallow, total]) => ({ swallow, total }))
+        .sort((a, b) => b.total - a.total),
+    });
+  }
+
+  // Alphabetical
+  customerRows.sort((a, b) => a.customerName.localeCompare(b.customerName));
+
+  const customers = customerRows.map((r) => r.customerName);
+  const grandTotal = customerRows.reduce((sum, r) => sum + r.totalMeals, 0);
+
+  const mealRows = pivot(customerRows, (r) =>
+    r.mealCounts.map((c) => ({ label: c.meal, total: c.total })),
+  );
+  const proteinRows = pivot(customerRows, (r) =>
+    r.proteinCounts.map((c) => ({ label: c.protein, total: c.total })),
+  );
+  const swallowRows = pivot(customerRows, (r) =>
+    r.swallowCounts.map((c) => ({ label: c.swallow, total: c.total })),
+  );
+
+  return {
+    serviceDay,
+    releasedCustomerCount: customerRows.length,
+    customers,
+    mealRows,
+    proteinRows,
+    swallowRows,
+    grandTotal,
+    customerRows,
+  };
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────

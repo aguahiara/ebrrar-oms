@@ -163,13 +163,15 @@ export async function POST(request: Request) {
         );
       }
 
+      const resolvedAt = new Date().toISOString();
+
       const { error: acceptError } = await supabase
         .from("order_exception")
         .update({
           status: "AcceptedAsIs",
           resolution_reason: reason.trim(),
           resolved_by: "operator",
-          resolved_at: new Date().toISOString(),
+          resolved_at: resolvedAt,
         })
         .eq("customer_id", customerId)
         .eq("service_day", serviceDay)
@@ -177,6 +179,24 @@ export async function POST(request: Request) {
 
       if (acceptError)
         throw new Error(`Failed to accept exceptions: ${acceptError.message}`);
+
+      // Accepting all exceptions as-is also clears any order_lines that still
+      // have protein_name = null — individual resolveOne() calls would have
+      // written "(No protein)" for each protein exception, but since we bulk-
+      // accepted them here we must replicate that write now.  Without this step
+      // Guard 4 would still block even after the exceptions are gone.
+      const { error: proteinClearErr } = await supabase
+        .from("order_line")
+        .update({ protein_name: "(No protein)" })
+        .eq("customer_id", customerId)
+        .eq("service_day", serviceDay)
+        .is("protein_name", null)
+        .neq("match_type", "FruitsOnly");
+
+      if (proteinClearErr)
+        throw new Error(
+          `Failed to clear protein data after bulk accept: ${proteinClearErr.message}`,
+        );
     }
 
     // ── Guard 2: no open exceptions may remain ────────────────────────────
@@ -203,12 +223,15 @@ export async function POST(request: Request) {
     }
 
     // ── Guard 3: no unreconciled order lines (menu_item_id IS NULL) ───────
+    // FruitsOnly lines legitimately have menu_item_id = null; they are
+    // excluded from this check via the match_type filter.
     const { count: unmatchedCount, error: unmatchedError } = await supabase
       .from("order_line")
       .select("id", { count: "exact", head: true })
       .eq("customer_id", customerId)
       .eq("service_day", serviceDay)
-      .is("menu_item_id", null);
+      .is("menu_item_id", null)
+      .neq("match_type", "FruitsOnly");
 
     if (unmatchedError)
       throw new Error(
@@ -225,21 +248,68 @@ export async function POST(request: Request) {
       );
     }
 
-    // ── Guard 4: no order lines with missing protein ───────────────────────
-    const { count: missingProteinCount, error: proteinError } = await supabase
+    // ── Guard 4: no matched lines with missing *required* protein ─────────
+    // We only block when protein_name IS NULL AND the matched menu item has
+    // protein_requirement = 'required'.  Optional/non-required meals are
+    // intentionally proteinless and must never block release.
+    //
+    // Two-step approach (PostgREST does not support cross-table WHERE in a
+    // single count query):
+    //   Step 1 — find all order_lines with protein_name IS NULL (excl. FruitsOnly).
+    //   Step 2 — of those, count only the ones whose menu item requires protein.
+    const { data: nullProteinLines, error: proteinFetchErr } = await supabase
       .from("order_line")
-      .select("id", { count: "exact", head: true })
+      .select("id, menu_item_id")
       .eq("customer_id", customerId)
       .eq("service_day", serviceDay)
-      .is("protein_name", null);
+      .is("protein_name", null)
+      .neq("match_type", "FruitsOnly");
 
-    if (proteinError)
-      throw new Error(`Failed to check protein data: ${proteinError.message}`);
+    if (proteinFetchErr)
+      throw new Error(
+        `Failed to check protein data: ${proteinFetchErr.message}`,
+      );
 
-    if ((missingProteinCount ?? 0) > 0) {
+    let missingProteinCount = 0;
+
+    if (nullProteinLines && nullProteinLines.length > 0) {
+      // Collect distinct menu_item_ids (nulls filtered out — unmatched lines
+      // are already caught by Guard 3 above, but be defensive).
+      const menuItemIds = [
+        ...new Set(
+          nullProteinLines
+            .map((l) => l.menu_item_id as string | null)
+            .filter((id): id is string => id !== null),
+        ),
+      ];
+
+      if (menuItemIds.length > 0) {
+        const { data: requiredItems, error: reqErr } = await supabase
+          .from("menu_item")
+          .select("id")
+          .in("id", menuItemIds)
+          .eq("protein_requirement", "required");
+
+        if (reqErr)
+          throw new Error(
+            `Failed to check protein requirements: ${reqErr.message}`,
+          );
+
+        const requiredIds = new Set(
+          requiredItems?.map((i) => i.id as string) ?? [],
+        );
+        missingProteinCount = nullProteinLines.filter(
+          (l) =>
+            l.menu_item_id !== null &&
+            requiredIds.has(l.menu_item_id as string),
+        ).length;
+      }
+    }
+
+    if (missingProteinCount > 0) {
       return NextResponse.json(
         {
-          error: `Cannot release: ${missingProteinCount} order line${missingProteinCount !== 1 ? "s" : ""} are missing protein data. Ensure all orders have a protein assigned.`,
+          error: `Cannot release: ${missingProteinCount} order line${missingProteinCount !== 1 ? "s" : ""} are missing required protein data. Ensure all orders have a protein assigned.`,
           missingProteinCount,
         },
         { status: 409 },

@@ -209,11 +209,12 @@ export function CustomerCard({
   const hasUnmatched = card.unmatchedOrders > 0;
   const hasMissingProtein = card.missingProtein > 0;
 
-  // "Accept all & release" is only offered when open exceptions are the SOLE
-  // remaining blocker. Unmatched orders and missing protein can't be resolved
-  // by accepting exceptions, so that path would still fail at the backend.
-  const canAcceptAllAndRelease =
-    hasOpenExceptions && !hasUnmatched && !hasMissingProtein;
+  // "Accept all & release" is offered whenever open exceptions are the only
+  // structural blocker.  Unmatched orders cannot be resolved this way, so we
+  // exclude that case.  Missing protein IS handled: the route writes
+  // "(No protein)" to every null-protein order_line as part of the bulk accept,
+  // so hasMissingProtein no longer prevents this path.
+  const canAcceptAllAndRelease = hasOpenExceptions && !hasUnmatched;
 
   const revokeReasonValid =
     revokeReasonKey !== "" &&
@@ -250,8 +251,9 @@ export function CustomerCard({
         />
       </div>
 
-      {/* ── Portion readiness (non-released cards only) ── */}
-      {card.status !== "released" && (
+      {/* ── Portion readiness — only shown for "ready" cards as a confirmation ──
+           For "needs_work" the portion issue appears inline in the blocker list. */}
+      {card.status === "ready" && (
         <div className="mb-4">
           <PortionReadinessBlock
             readiness={card.portionReadiness}
@@ -353,49 +355,91 @@ export function CustomerCard({
       {/* ── Needs work ── */}
       {card.status === "needs_work" && (
         <div className="space-y-3">
-          {/* Per-blocker explanations */}
-          <div className="space-y-1.5 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-900 dark:bg-amber-950/40">
+          {/* ── Per-blocker list with inline action links ──────────────────────
+               Each blocker row is a flex container: description on the left,
+               a contextual action link on the right.  This keeps the release
+               area visible at all times so users know exactly what to fix and
+               where to go.                                                      */}
+          <div className="divide-y divide-amber-100 rounded-md border border-amber-200 bg-amber-50 dark:divide-amber-900/60 dark:border-amber-900 dark:bg-amber-950/40">
             {hasUnmatched && (
-              <p className="text-sm text-amber-800 dark:text-amber-300">
-                <span className="font-semibold">{card.unmatchedOrders}</span>{" "}
-                unreconciled order{card.unmatchedOrders !== 1 ? "s" : ""} — all
-                orders must be matched to a menu item before release.
-              </p>
+              <div className="flex items-start gap-3 px-4 py-2.5">
+                <p className="flex-1 text-sm text-amber-800 dark:text-amber-300">
+                  <span className="font-semibold">{card.unmatchedOrders}</span>{" "}
+                  unreconciled order{card.unmatchedOrders !== 1 ? "s" : ""} — all
+                  orders must be matched to a menu item before release.
+                </p>
+              </div>
             )}
             {hasMissingProtein && (
-              <p className="text-sm text-amber-800 dark:text-amber-300">
-                <span className="font-semibold">{card.missingProtein}</span>{" "}
-                order line{card.missingProtein !== 1 ? "s" : ""} missing protein
-                data — all orders must have a protein assigned before release.
-              </p>
+              <div className="flex items-start justify-between gap-3 px-4 py-2.5">
+                <p className="flex-1 text-sm text-amber-800 dark:text-amber-300">
+                  <span className="font-semibold">{card.missingProtein}</span>{" "}
+                  order line{card.missingProtein !== 1 ? "s" : ""} missing
+                  required protein — assign a protein to each before release.
+                </p>
+                <a
+                  href={`/exceptions?customerId=${card.customerId}&date=${serviceDay}&type=protein`}
+                  className="shrink-0 text-xs font-medium text-amber-700 underline underline-offset-2 hover:text-amber-900 dark:text-amber-400 dark:hover:text-amber-200"
+                >
+                  Resolve Protein Issues →
+                </a>
+              </div>
             )}
             {hasOpenExceptions && (
-              <p className="text-sm text-amber-800 dark:text-amber-300">
-                <span className="font-semibold">{card.openExceptionCount}</span>{" "}
-                open exception{card.openExceptionCount !== 1 ? "s" : ""} — resolve
-                or accept them before release.
-              </p>
+              <div className="flex items-start justify-between gap-3 px-4 py-2.5">
+                <p className="flex-1 text-sm text-amber-800 dark:text-amber-300">
+                  <span className="font-semibold">{card.openExceptionCount}</span>{" "}
+                  open exception{card.openExceptionCount !== 1 ? "s" : ""} — resolve
+                  or accept them before release.
+                </p>
+                <a
+                  href={`/exceptions?customerId=${card.customerId}&date=${serviceDay}`}
+                  className="shrink-0 text-xs font-medium text-amber-700 underline underline-offset-2 hover:text-amber-900 dark:text-amber-400 dark:hover:text-amber-200"
+                >
+                  Review Exceptions →
+                </a>
+              </div>
             )}
             {card.portionReadiness.status !== "ready" && (
-              <p className="text-sm text-amber-800 dark:text-amber-300">
-                <span className="font-semibold">Portion profile</span>{" "}
-                {card.portionReadiness.status === "missing"
-                  ? "— no active profile found."
-                  : `— ${card.portionReadiness.unmappedCategories.length} meal ${card.portionReadiness.unmappedCategories.length === 1 ? "category" : "categories"} not mapped.`}
-              </p>
+              <div className="flex items-start justify-between gap-3 px-4 py-2.5">
+                <p className="flex-1 text-sm text-amber-800 dark:text-amber-300">
+                  <span className="font-semibold">Portion profile</span>{" "}
+                  {card.portionReadiness.status === "missing"
+                    ? "— no active profile found. Release is blocked until a profile is activated."
+                    : `— ${card.portionReadiness.unmappedCategories.length} meal ${
+                        card.portionReadiness.unmappedCategories.length === 1
+                          ? "category"
+                          : "categories"
+                      } not mapped.`}
+                  {card.portionReadiness.status === "incomplete" && (
+                    <span className="ml-1 font-mono text-xs">
+                      ({card.portionReadiness.unmappedCategories.join(", ")})
+                    </span>
+                  )}
+                </p>
+                <a
+                  href={`/customers/${card.customerId}`}
+                  className="shrink-0 text-xs font-medium text-amber-700 underline underline-offset-2 hover:text-amber-900 dark:text-amber-400 dark:hover:text-amber-200"
+                >
+                  Edit Profile →
+                </a>
+              </div>
             )}
           </div>
 
-          {/* Actions */}
+          {/* ── Release action row ──────────────────────────────────────────────
+               The disabled "Release Blocked" button is ALWAYS shown here so
+               the user can see exactly where the release action lives even
+               before all blockers are resolved.                                 */}
           <div className="flex flex-wrap items-center gap-3">
-            {hasOpenExceptions && (
-              <a
-                href={`/exceptions?customerId=${card.customerId}&date=${serviceDay}`}
-                className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-500"
-              >
-                Review Exceptions
-              </a>
-            )}
+            <button
+              type="button"
+              disabled
+              title="Resolve all blockers listed above to enable release"
+              className="cursor-not-allowed rounded-md bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-400 ring-1 ring-inset ring-zinc-200 dark:bg-zinc-800 dark:text-zinc-500 dark:ring-zinc-700"
+            >
+              Release Blocked
+            </button>
 
             {canAcceptAllAndRelease && !showReason && (
               <button
