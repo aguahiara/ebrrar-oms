@@ -238,9 +238,19 @@ export function parseOrderText(text: string): ParsedOrderText {
   // only consumed the FIRST separator — any remaining `with` occurrences
   // in the add-on string must also be treated as token boundaries so that
   // "Semo with Beef" → ["Semo","Beef"] and "Dodo with Fish" → ["Dodo","Fish"].
+  //
+  // Leading-connector strip: after PRIMARY_SEP_RE consumes e.g. " Served With "
+  // the restRaw can begin with a bare connector word ("and Eba and Beef").
+  // Because ADDON_SEP_RE requires whitespace on both sides (`\s+and\s+`), that
+  // leading "and" is NOT matched as a separator — it ends up glued to the first
+  // token ("and Eba"), which then fails the swallow vocabulary lookup.
+  // Stripping the leading connector from each token after the split fixes this.
   ADDON_SEP_RE.lastIndex = 0;
   const addOns = restRaw
-    ? restRaw.split(ADDON_SEP_RE).map((s) => s.trim()).filter(Boolean)
+    ? restRaw
+        .split(ADDON_SEP_RE)
+        .map((s) => s.replace(/^(?:served\s+with|and|with)\s+/i, "").trim())
+        .filter(Boolean)
     : [];
 
   return { mainMeal: mainRaw, addOns, hasSeparator: true };

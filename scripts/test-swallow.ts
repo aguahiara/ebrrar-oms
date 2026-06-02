@@ -344,6 +344,76 @@ run({
   expectedMainMeal: "Egusi Soup",
 });
 
+// ── HGI protein-extraction regression tests (Task 10) ────────────────────────
+//
+// These reproduce the four patterns reported by HGI that were still failing
+// after the bd5fc0c multi-separator fix.  The root cause is that the restRaw
+// produced by PRIMARY_SEP_RE can begin with a connector word ("and", "with")
+// that ADDON_SEP_RE does not strip, resulting in malformed tokens such as
+// "and Eba" that never match the swallow vocabulary.
+
+console.log("\n── HGI protein-extraction regression tests ──────────────────────────");
+
+// HGI-A — "Served with Semo and Assorted meat" (swallow first, protein second)
+run({
+  label: "HGI-A — Afang Soup Served with Semo and Assorted meat → swallow=Semo, protein=Assorted",
+  rawText: "Afang Soup Served with Semo and Assorted meat",
+  expectedSwallow: "Semo",
+  expectedProtein: "Assorted",
+  expectedMainMeal: "Afang Soup",
+});
+
+// HGI-B — "Served with Semo and Beef" (swallow first, protein second)
+run({
+  label: "HGI-B — Egusi Soup Served with Semo and Beef → swallow=Semo, protein=Beef",
+  rawText: "Egusi Soup Served with Semo and Beef",
+  expectedSwallow: "Semo",
+  expectedProtein: "Beef",
+  expectedMainMeal: "Egusi Soup",
+});
+
+// HGI-C — protein BEFORE swallow, split by two different separators
+// "With Goat Meat" → main-meal separator splits first, restRaw = "Goat Meat Served with Semo"
+// ADDON_SEP_RE then splits on the second "with" → ["Goat Meat Served", "Semo"]
+// "Goat Meat Served" must still resolve to protein via alias starts-with
+run({
+  label: "HGI-C — Ofe Owerri With Goat Meat Served with Semo → protein=Goat meat, swallow=Semo",
+  rawText: "Ofe Owerri With Goat Meat Served with Semo",
+  expectedSwallow: "Semo",
+  expectedProtein: "Goat meat",
+  expectedMainMeal: "Ofe Owerri",
+});
+
+// HGI-D — leading "and" before swallow after PRIMARY split
+// "Served With and Eba" → restRaw = "and Eba and Assorted meat"
+// ADDON_SEP_RE does NOT strip the leading "and", so first token = "and Eba" (not "Eba")
+// FIX REQUIRED: strip leading connectors from each token after the split
+run({
+  label: "HGI-D — Ogbono Soup Served With and Eba and Assorted meat → swallow=Eba, protein=Assorted",
+  rawText: "Ogbono Soup Served With and Eba and Assorted meat",
+  expectedSwallow: "Eba",
+  expectedProtein: "Assorted",
+  expectedMainMeal: "Ogbono Soup",
+});
+
+// HGI-E — two consecutive "with" separators (swallow + protein)
+run({
+  label: "HGI-E — Okro Soup with Eba with Fish → swallow=Eba, protein=Fish",
+  rawText: "Okro Soup with Eba with Fish",
+  expectedSwallow: "Eba",
+  expectedProtein: "Fish",
+  expectedMainMeal: "Okro Soup",
+});
+
+// HGI-F — "and" splits protein + side (Dodo is a side, not a protein or swallow)
+run({
+  label: "HGI-F — Jollof Rice with Dodo and Chicken → protein=Chicken, swallow=null",
+  rawText: "Jollof Rice with Dodo and Chicken",
+  expectedSwallow: null,
+  expectedProtein: "Chicken",
+  expectedMainMeal: "Jollof Rice",
+});
+
 // ── classifyForDisplay tests ──────────────────────────────────────────────────
 
 console.log("\n── classifyForDisplay() ─────────────────────────────────────────────");
