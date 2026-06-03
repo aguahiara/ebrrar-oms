@@ -13,7 +13,7 @@
 
 import { getAppSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
-import { supabase } from "@/lib/supabase";
+import { createSupabaseServiceClient } from "@/lib/supabase-server";
 import type { ConfigurableParserType } from "@/lib/upload-config";
 import { NextResponse } from "next/server";
 
@@ -36,8 +36,9 @@ export async function GET(_request: Request, { params }: RouteContext) {
 
   try {
     const { id } = await params;
+    const db = createSupabaseServiceClient();
 
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from("customer_upload_config")
       .select(
         "id, customer_id, format_name, parser_type, is_active, config, created_at, updated_at",
@@ -98,8 +99,13 @@ export async function PUT(request: Request, { params }: RouteContext) {
     const { id } = await params;
     const body = (await request.json()) as PutBody;
 
+    // Use the service-role client — permission is already verified above via
+    // hasPermission(manage_customers). Service role bypasses RLS so that the
+    // anon-key singleton's lack of a session doesn't cause policy violations.
+    const db = createSupabaseServiceClient();
+
     // ── Deactivate all existing active configs ──────────────────────────────
-    const { error: deactivateError } = await supabase
+    const { error: deactivateError } = await db
       .from("customer_upload_config")
       .update({ is_active: false, updated_at: new Date().toISOString() })
       .eq("customer_id", id)
@@ -136,7 +142,7 @@ export async function PUT(request: Request, { params }: RouteContext) {
       );
     }
 
-    const { error: insertError } = await supabase
+    const { error: insertError } = await db
       .from("customer_upload_config")
       .insert({
         customer_id: id,
