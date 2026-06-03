@@ -660,6 +660,106 @@ export async function persistUpload(params: {
   return { batchId: batch.id, linesInserted, exceptionsInserted, duplicatesSkipped };
 }
 
+// ─── Manual Order types ───────────────────────────────────────────────────────
+
+export type ManualOrderSource =
+  | "manual_corporate_addon"
+  | "manual_corporate_direct"
+  | "special_order";
+
+export type ManualOrderLine = {
+  /** Matched menu item ID; null for FruitsOnly. */
+  menuItemId: string | null;
+  /** Display label used as meal_name_raw. */
+  mealNameRaw: string;
+  /** Always "Direct" for menu-selected items or "FruitsOnly". */
+  matchType: "Direct" | "FruitsOnly";
+  proteinName: string | null;
+  swallowName: string | null;
+  sideName: string | null;
+  quantity: number;
+  notes: string | null;
+  orderSource: ManualOrderSource;
+};
+
+/**
+ * Persist manually entered orders.  Unlike persistUpload(), this function:
+ *   • Skips employee-deduplication (no per-employee concept for manual orders).
+ *   • Inserts order_source on each line.
+ *   • Supports quantity > 1 per line.
+ *   • Does NOT create order_exception rows (caller validates before calling).
+ *   • Does NOT call resolveOrders() — items are already resolved by the form.
+ */
+export async function persistManualOrders(params: {
+  customerId: string;
+  serviceDay: string;
+  createdBy: string;
+  batchNotes?: string;
+  // Special order fields (only for special_order source)
+  contactName?: string;
+  contactPhone?: string;
+  pickupDelivery?: "Pickup" | "Delivery";
+  deliveryNotes?: string;
+  lines: ManualOrderLine[];
+}): Promise<{ batchId: string; linesInserted: number }> {
+  const { data: batch, error: batchError } = await supabase
+    .from("order_batch")
+    .insert({
+      customer_id: params.customerId,
+      service_day: params.serviceDay,
+      source_filename: null,
+      channel: "ManualEntry",
+      created_by: params.createdBy,
+      batch_notes: params.batchNotes ?? null,
+      contact_name: params.contactName ?? null,
+      contact_phone: params.contactPhone ?? null,
+      pickup_delivery: params.pickupDelivery ?? null,
+      delivery_notes: params.deliveryNotes ?? null,
+    })
+    .select("id")
+    .single();
+
+  if (batchError || !batch) {
+    throw new Error(
+      `Failed to create manual order batch: ${batchError?.message ?? "unknown error"}`,
+    );
+  }
+
+  if (params.lines.length === 0) {
+    return { batchId: batch.id, linesInserted: 0 };
+  }
+
+  const lineRows = params.lines.map((line) => ({
+    order_batch_id: batch.id,
+    customer_id: params.customerId,
+    service_day: params.serviceDay,
+    menu_item_id: line.menuItemId,
+    meal_name_raw: line.mealNameRaw,
+    employee_ref: null,
+    quantity: line.quantity,
+    match_type: line.matchType,
+    protein_name:
+      line.matchType === "FruitsOnly" ? "(No protein)" : (line.proteinName ?? null),
+    swallow_name: line.swallowName ?? null,
+    side_name: line.sideName ?? null,
+    line_notes: line.notes ?? null,
+    order_source: line.orderSource,
+  }));
+
+  const { data: inserted, error: linesError } = await supabase
+    .from("order_line")
+    .insert(lineRows)
+    .select("id");
+
+  if (linesError) {
+    // Roll back the batch we just created so we don't leave an orphan.
+    await supabase.from("order_batch").delete().eq("id", batch.id);
+    throw new Error(`Failed to insert manual order lines: ${linesError.message}`);
+  }
+
+  return { batchId: batch.id, linesInserted: inserted?.length ?? 0 };
+}
+
 /**
  * Reject (hard-delete) a specific upload batch.
  *

@@ -58,6 +58,16 @@ export type CustomerDashboardCard = {
   proteinCounts: { protein: string; total: number }[];
   /** Portion profile readiness — "ready" means release is not blocked by profile gaps. */
   portionReadiness: PortionReadiness;
+  /**
+   * Order lines from bulk file upload (order_source = 'bulk_upload' or NULL).
+   * Excludes exception-mapped lines (same accounting as totalUploaded).
+   */
+  bulkUploadCount: number;
+  /**
+   * Order lines entered manually (order_source starts with 'manual_' or
+   * = 'special_order').
+   */
+  manualOrderCount: number;
 };
 
 export type ConsolidatedDashboard = {
@@ -128,6 +138,7 @@ export async function fetchConsolidatedDashboard(
          menu_item_id,
          match_type,
          protein_name,
+         order_source,
          customer ( display_name ),
          menu_item ( canonical_name, category, protein_requirement )`,
       )
@@ -199,6 +210,10 @@ export async function fetchConsolidatedDashboard(
     proteinMap: Map<string, number>;
     /** Distinct menu_item.category values seen in matched lines. */
     categorySet: Set<string>;
+    /** Lines from bulk upload (order_source = 'bulk_upload' or NULL). */
+    bulkUploadCount: number;
+    /** Lines entered manually (order_source starts with 'manual_' or = 'special_order'). */
+    manualOrderCount: number;
   };
 
   const byCustomer = new Map<string, LineGroup>();
@@ -222,11 +237,21 @@ export async function fetchConsolidatedDashboard(
         mealMap: new Map(),
         proteinMap: new Map(),
         categorySet: new Set(),
+        bulkUploadCount: 0,
+        manualOrderCount: 0,
       });
     }
 
     const g = byCustomer.get(custId)!;
     g.totalOrders += 1;
+
+    // Source breakdown: NULL or 'bulk_upload' = uploaded; anything else = manual.
+    const lineSource = (line as Record<string, unknown>).order_source;
+    if (lineSource === null || lineSource === undefined || lineSource === "bulk_upload") {
+      g.bulkUploadCount += 1;
+    } else {
+      g.manualOrderCount += 1;
+    }
 
     // Matched = has a menu_item_id OR is a FruitsOnly line (menu_item_id stays
     // null for FruitsOnly, but the order is production-ready).
@@ -360,6 +385,8 @@ export async function fetchConsolidatedDashboard(
       mealCounts,
       proteinCounts,
       portionReadiness,
+      bulkUploadCount: g.bulkUploadCount,
+      manualOrderCount: g.manualOrderCount,
     });
   }
 

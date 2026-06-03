@@ -243,7 +243,7 @@ export function CustomerCard({
 
       {/* ── Stats ── */}
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
-        <Stat label="Uploaded" value={card.totalUploaded} />
+        <Stat label="Total Orders" value={card.totalUploaded} />
         <Stat label="Matched" value={card.matchedOrders} />
         <Stat
           label="Unreconciled"
@@ -261,6 +261,24 @@ export function CustomerCard({
           highlight={card.missingProtein > 0 ? "warn" : undefined}
         />
       </div>
+
+      {/* ── Source breakdown — only shown when manual orders are present ── */}
+      {card.manualOrderCount > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+          <span>
+            Bulk upload:{" "}
+            <span className="font-medium text-zinc-700 dark:text-zinc-300">
+              {card.bulkUploadCount}
+            </span>
+          </span>
+          <span>
+            Manual:{" "}
+            <span className="font-medium text-zinc-700 dark:text-zinc-300">
+              {card.manualOrderCount}
+            </span>
+          </span>
+        </div>
+      )}
 
       {/* ── Portion readiness — only shown for "ready" cards as a confirmation ──
            For "needs_work" the portion issue appears inline in the blocker list. */}
