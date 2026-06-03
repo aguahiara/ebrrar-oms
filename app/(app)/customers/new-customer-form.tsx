@@ -8,7 +8,8 @@ type FormatOption = { value: string; label: string };
 export function NewCustomerForm({ formats }: { formats: FormatOption[] }) {
   const router = useRouter();
   const [name, setName] = useState("");
-  const [format, setFormat] = useState(formats[0]?.value ?? "");
+  // Default to "not configured" — format can be set on the Customer Detail page
+  const [format, setFormat] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -78,11 +79,14 @@ export function NewCustomerForm({ formats }: { formats: FormatOption[] }) {
             onChange={(e) => setFormat(e.target.value)}
             className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
           >
-            {formats.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}
-              </option>
-            ))}
+            <option value="">Not configured yet</option>
+            <optgroup label="Predefined formats">
+              {formats.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {f.label}
+                </option>
+              ))}
+            </optgroup>
           </select>
         </div>
 
@@ -101,8 +105,8 @@ export function NewCustomerForm({ formats }: { formats: FormatOption[] }) {
       )}
 
       <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
-        After adding, assign the customer to the published menu on the
-        Assignments screen, then upload their order file.
+        After adding, open the customer detail page to configure the upload
+        format, assign a menu, and then upload order files.
       </p>
     </div>
   );

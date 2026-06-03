@@ -13,7 +13,7 @@ type PatchBody = {
   displayName?: string;
   customerCode?: string | null;
   status?: string;
-  parserFormat?: string;
+  parserFormat?: string | null;
   notes?: string | null;
 };
 
@@ -43,8 +43,10 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       );
     }
 
+    // null is allowed (clears the parser format); validate only non-null values.
     if (
       body.parserFormat !== undefined &&
+      body.parserFormat !== null &&
       !VALID_FORMATS.has(body.parserFormat)
     ) {
       return NextResponse.json(

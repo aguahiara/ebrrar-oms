@@ -1,6 +1,5 @@
 "use client";
 
-import { PARSER_FORMAT_OPTIONS } from "@/lib/parsers";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -9,24 +8,15 @@ type CustomerData = {
   displayName: string;
   customerCode: string | null;
   status: string;
-  parserFormat: string | null;
   notes: string | null;
 };
 
-type UploadConfigInfo = {
-  formatName: string;
-  parserType: string;
-  parserLabel: string;
-} | null;
-
 type Props = {
   customer: CustomerData;
-  /** Active customer_upload_config row, if any. null = using legacy parser_format. */
-  uploadConfig?: UploadConfigInfo;
   canEdit: boolean;
 };
 
-export function CustomerEditForm({ customer, uploadConfig, canEdit }: Props) {
+export function CustomerEditForm({ customer, canEdit }: Props) {
   const router = useRouter();
 
   const [editing, setEditing] = useState(false);
@@ -37,14 +27,12 @@ export function CustomerEditForm({ customer, uploadConfig, canEdit }: Props) {
   const [displayName, setDisplayName] = useState(customer.displayName);
   const [customerCode, setCustomerCode] = useState(customer.customerCode ?? "");
   const [status, setStatus] = useState(customer.status);
-  const [parserFormat, setParserFormat] = useState(customer.parserFormat ?? "");
   const [notes, setNotes] = useState(customer.notes ?? "");
 
   function handleCancel() {
     setDisplayName(customer.displayName);
     setCustomerCode(customer.customerCode ?? "");
     setStatus(customer.status);
-    setParserFormat(customer.parserFormat ?? "");
     setNotes(customer.notes ?? "");
     setError(null);
     setEditing(false);
@@ -65,7 +53,6 @@ export function CustomerEditForm({ customer, uploadConfig, canEdit }: Props) {
           displayName: displayName.trim(),
           customerCode: customerCode.trim() || null,
           status,
-          parserFormat: parserFormat || null,
           notes: notes.trim() || null,
         }),
       });
@@ -85,10 +72,6 @@ export function CustomerEditForm({ customer, uploadConfig, canEdit }: Props) {
 
   // ── View mode ────────────────────────────────────────────────────────────────
   if (!editing) {
-    const formatLabel =
-      PARSER_FORMAT_OPTIONS.find((o) => o.value === customer.parserFormat)
-        ?.label ?? "— not set —";
-
     return (
       <div className="overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
         <div className="flex items-center justify-between border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
@@ -110,28 +93,6 @@ export function CustomerEditForm({ customer, uploadConfig, canEdit }: Props) {
           <Row label="Customer code" value={customer.customerCode ?? "—"} />
           <Row label="Status">
             <StatusChip status={customer.status} />
-          </Row>
-          <Row label="Order file format" value={formatLabel} />
-          {/* Configurable upload format (overrides Order file format when active) */}
-          <Row label="Configurable upload format">
-            {uploadConfig ? (
-              <span>
-                <span className="font-medium text-zinc-900 dark:text-zinc-50">
-                  {uploadConfig.formatName}
-                </span>
-                <span className="ml-2 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-950 dark:text-blue-300">
-                  Active
-                </span>
-                <br />
-                <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                  {uploadConfig.parserLabel}
-                </span>
-              </span>
-            ) : (
-              <span className="text-zinc-400 dark:text-zinc-500">
-                None — using legacy file format above
-              </span>
-            )}
           </Row>
           <Row
             label="Notes"
@@ -192,21 +153,6 @@ export function CustomerEditForm({ customer, uploadConfig, canEdit }: Props) {
           >
             <option value="Active">Active</option>
             <option value="Inactive">Inactive</option>
-          </select>
-        </Field>
-
-        <Field label="Order file format">
-          <select
-            value={parserFormat}
-            onChange={(e) => setParserFormat(e.target.value)}
-            className="block w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50"
-          >
-            <option value="">— not set —</option>
-            {PARSER_FORMAT_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
           </select>
         </Field>
 

@@ -769,34 +769,38 @@ export default function UploadPage() {
                 ))}
               </select>
 
-              {/* Format info badge */}
-              {currentFormat !== null && (
-                <div className="mt-1.5">
-                  {currentFormat.configured ? (
-                    <p className="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
-                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                      {currentFormat.label ?? currentFormat.parserType}
-                      {currentFormat.hasConfig && (
-                        <span className="ml-1 rounded-full bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
-                          configurable
-                        </span>
-                      )}
-                    </p>
-                  ) : (
-                    <p className="flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-400">
-                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-500" />
-                      No upload format configured for this customer.{" "}
-                      <a
-                        href="/customers"
-                        className="underline hover:text-amber-900 dark:hover:text-amber-200"
-                      >
-                        Set it on the Customers page.
-                      </a>
-                    </p>
+              {/* Format info badge (configured only) */}
+              {currentFormat?.configured && (
+                <p className="mt-1.5 flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+                  <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  {currentFormat.label ?? currentFormat.parserType}
+                  {currentFormat.hasConfig && (
+                    <span className="ml-1 rounded-full bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                      configurable
+                    </span>
                   )}
-                </div>
+                </p>
               )}
             </div>
+
+            {/* ── No format configured — block upload ─────────────────────── */}
+            {currentFormat?.configured === false && (
+              <div className="mb-5 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 dark:border-amber-800 dark:bg-amber-950/40">
+                <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+                  ⚠ No upload format configured for {customer}
+                </p>
+                <p className="mt-1 text-sm text-amber-700 dark:text-amber-400">
+                  An upload format must be configured before orders can be
+                  uploaded.{" "}
+                  <Link
+                    href="/customers"
+                    className="font-medium underline hover:text-amber-900 dark:hover:text-amber-200"
+                  >
+                    Configure it on the Customers page →
+                  </Link>
+                </p>
+              </div>
+            )}
 
             {/* ── Service week ── */}
             <div className="mb-5">
@@ -821,7 +825,7 @@ export default function UploadPage() {
             </div>
 
             {/* ── File picker ── */}
-            <div className="mb-6">
+            <div className={`mb-6 ${currentFormat?.configured === false ? "pointer-events-none opacity-40" : ""}`}>
               <label
                 htmlFor="file"
                 className="mb-2 block text-sm font-medium text-zinc-700 dark:text-zinc-300"
@@ -832,6 +836,7 @@ export default function UploadPage() {
                 id="file"
                 type="file"
                 accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                disabled={currentFormat?.configured === false}
                 onChange={(e) => {
                   setFile(e.target.files?.[0] ?? null);
                   setError(null);
@@ -846,7 +851,7 @@ export default function UploadPage() {
             <button
               type="button"
               onClick={handlePreview}
-              disabled={isPreviewing || !file}
+              disabled={isPreviewing || !file || currentFormat?.configured === false}
               className="w-full rounded-md bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-200"
             >
               {isPreviewing ? "Preparing preview…" : "Preview Upload"}

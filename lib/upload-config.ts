@@ -20,6 +20,50 @@ export type ConfigurableParserType =
   | "summary_quantity_format"
   | "single_sheet_weekly_grid_with_reference_menu";
 
+// ── EmployeeSelectionConfig ───────────────────────────────────────────────────
+
+/**
+ * Configuration for `single_sheet_weekly_grid_with_reference_menu`.
+ *
+ * Covers workbooks (e.g. Energia / PowerApps exports) where:
+ *  - One sheet holds employee meal selections with weekday columns.
+ *  - A second sheet is a reference menu that must be silently ignored.
+ *  - Each weekday can have a separate meal column AND an optional protein column.
+ *
+ * Example layout (Employee Selection sheet):
+ *   Name | Mon Food | Mon Protein | Tues Food | Tues Protein | …
+ */
+export type EmployeeSelectionConfig = {
+  /**
+   * Name of the sheet that contains employee order rows.
+   * Matched first by exact name, then by case-insensitive contains.
+   * Defaults to the first sheet if omitted.
+   */
+  orderSheetName?: string;
+  /**
+   * Name of the reference menu sheet (silently skipped — not parsed as orders).
+   * Informational only; used to validate the workbook structure and produce
+   * customer-specific error messages.
+   */
+  referenceMenuSheetName?: string;
+  /** Column header for the employee name. */
+  nameColumn: string;
+  /**
+   * Zero-based row index of the header row.
+   * Default: 0 (first row is the header).
+   */
+  headerRow?: number;
+  /** Column headers for the food/meal selection for each weekday. */
+  weekdayMealColumns: Partial<Record<DayOfWeek, string>>;
+  /**
+   * Column headers for the explicit protein selection for each weekday.
+   * When set, values are passed as `proteinRaw` to the resolve pipeline.
+   */
+  weekdayProteinColumns?: Partial<Record<DayOfWeek, string>>;
+  /** Cell values that mean the employee has no meal for that day. */
+  optOutValues?: string[];
+};
+
 // ── Per-type config shapes ─────────────────────────────────────────────────────
 
 /**
@@ -200,5 +244,5 @@ export const CONFIGURABLE_PARSER_LABELS: Record<ConfigurableParserType, string> 
   summary_quantity_format:
     "Summary quantity — meal counts with optional comment splits",
   single_sheet_weekly_grid_with_reference_menu:
-    "Single sheet — employee selections with reference menu (Energia style)",
+    "Employee selection with reference menu (Energia style)",
 };

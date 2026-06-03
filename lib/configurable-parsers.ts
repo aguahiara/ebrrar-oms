@@ -18,6 +18,7 @@
 import type { DayOfWeek, OrderRecord } from "@/lib/order-types";
 import type {
   CustomerUploadConfig,
+  EmployeeSelectionConfig,
   GridParserConfig,
   MultiSheetParserConfig,
   SummaryQuantityConfig,
@@ -544,6 +545,141 @@ export function parseSummaryQuantity(
   return records;
 }
 
+// ── Parser D: single_sheet_weekly_grid_with_reference_menu ───────────────────
+
+/**
+ * Parse an employee-selection grid where one sheet holds the orders and a
+ * second sheet is a reference menu (silently ignored).
+ *
+ * Each weekday can have a separate meal column and an optional protein column.
+ * This covers Energia / PowerApps-exported workbooks:
+ *
+ *   Name | Mon Food | Mon Protein | Tues Food | Tues Protein | …
+ *
+ * The reference menu sheet (e.g. "Food for the week") is simply not read —
+ * no order rows are emitted from it.
+ */
+export function parseEmployeeSelectionGrid(
+  buffer: Buffer,
+  config: EmployeeSelectionConfig,
+): OrderRecord[] {
+  const {
+    orderSheetName,
+    nameColumn,
+    headerRow: headerRowOverride = 0,
+    weekdayMealColumns,
+    weekdayProteinColumns = {},
+    optOutValues = DEFAULT_OPT_OUT,
+  } = config;
+
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+
+  // ── Resolve the order sheet ──────────────────────────────────────────────
+  let sheetName: string;
+  if (orderSheetName) {
+    const lower = orderSheetName.toLowerCase();
+    // Exact match first, then case-insensitive contains
+    const found =
+      workbook.SheetNames.find((s) => s.toLowerCase() === lower) ??
+      workbook.SheetNames.find((s) => s.toLowerCase().includes(lower));
+    if (!found) {
+      const available =
+        workbook.SheetNames.length > 0
+          ? workbook.SheetNames.join(", ")
+          : "(none)";
+      throw new Error(
+        `Expected the order sheet "${orderSheetName}" but it was not found. ` +
+          `Sheets present: ${available}. ` +
+          `Check the upload format configuration for this customer.`,
+      );
+    }
+    sheetName = found;
+  } else {
+    const first = workbook.SheetNames[0];
+    if (!first) throw new Error("Workbook has no sheets.");
+    sheetName = first;
+  }
+
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(
+    workbook.Sheets[sheetName],
+    { header: 1, defval: "" },
+  );
+
+  const headerIdx = headerRowOverride;
+  if (rows.length === 0 || headerIdx >= rows.length) {
+    throw new Error(
+      `Header row ${headerIdx + 1} not found in sheet "${sheetName}". ` +
+        `The sheet only has ${rows.length} row(s).`,
+    );
+  }
+
+  const headerMap = buildHeaderIndex(rows[headerIdx]);
+
+  const nameColIdx = resolveColIndex(headerMap, nameColumn);
+  if (nameColIdx === undefined) {
+    throw new Error(
+      `Name column "${nameColumn}" not found in the header row of sheet "${sheetName}". ` +
+        `Check the nameColumn setting in the upload format configuration.`,
+    );
+  }
+
+  // ── Build day → (mealColIdx, proteinColIdx?) pairs ───────────────────────
+  const dayColumns: {
+    day: DayOfWeek;
+    mealColIdx: number;
+    proteinColIdx: number | undefined;
+  }[] = [];
+
+  for (const [dayCode, mealHeader] of Object.entries(weekdayMealColumns)) {
+    if (!mealHeader) continue;
+    const mealColIdx = resolveColIndex(headerMap, mealHeader);
+    if (mealColIdx === undefined) continue; // column not in file — skip day
+
+    const proteinHeader =
+      (weekdayProteinColumns as Partial<Record<string, string>>)[dayCode];
+    const proteinColIdx = proteinHeader
+      ? resolveColIndex(headerMap, proteinHeader)
+      : undefined;
+
+    dayColumns.push({ day: dayCode as DayOfWeek, mealColIdx, proteinColIdx });
+  }
+
+  if (dayColumns.length === 0) {
+    throw new Error(
+      "No weekday meal columns found in the workbook. " +
+        "Check that the weekdayMealColumns configuration matches the actual column headings.",
+    );
+  }
+
+  // ── Extract one OrderRecord per (employee, weekday) pair ─────────────────
+  const records: OrderRecord[] = [];
+
+  for (const row of rows.slice(headerIdx + 1)) {
+    const employeeName = cellText(row[nameColIdx]);
+    if (!employeeName) continue;
+
+    for (const { day, mealColIdx, proteinColIdx } of dayColumns) {
+      const rawMealText = cellText(row[mealColIdx]);
+      if (!rawMealText || isOptOut(rawMealText, optOutValues)) continue;
+
+      // Only attach proteinRaw when the column was configured and has a value.
+      const proteinRaw: string | null | undefined =
+        proteinColIdx !== undefined
+          ? cellText(row[proteinColIdx]) || null
+          : undefined;
+
+      records.push({
+        employeeName,
+        dayOfWeek: day,
+        rawMealText,
+        ...(proteinRaw !== undefined ? { proteinRaw } : {}),
+      });
+    }
+  }
+
+  return records;
+}
+
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 
 /**
@@ -572,11 +708,7 @@ export function parseWithConfig(
       return parseSummaryQuantity(buffer, cfg as SummaryQuantityConfig);
 
     case "single_sheet_weekly_grid_with_reference_menu":
-      throw new Error(
-        'The "single_sheet_weekly_grid_with_reference_menu" parser type is not yet ' +
-          "fully implemented. Use single_sheet_weekly_grid for now and configure " +
-          "the menu reference sheet separately.",
-      );
+      return parseEmployeeSelectionGrid(buffer, cfg as EmployeeSelectionConfig);
 
     default: {
       // TypeScript exhaustiveness guard
