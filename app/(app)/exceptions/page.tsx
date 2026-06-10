@@ -31,7 +31,7 @@ const STATUS_OPTIONS: { value: ExceptionStatusFilter; label: string }[] = [
   { value: "All", label: "All statuses" },
 ];
 
-type ResolveAction = "map" | "drop" | "accept";
+type ResolveAction = "map" | "drop" | "accept" | "remove_order";
 
 // ─── Small helpers ────────────────────────────────────────────────────────────
 
@@ -115,6 +115,10 @@ function ExceptionsContent() {
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Remove-order modal state (protein exceptions only)
+  const [removeOrderTarget, setRemoveOrderTarget] = useState<OpenOrderException | null>(null);
+  const [removeReason, setRemoveReason] = useState("");
+  const [removeNotes, setRemoveNotes] = useState("");
   /**
    * True when the operator has resolved (or just resolved) all Open exceptions
    * for the current customer + date/week.  Triggers the "All resolved" next-step
@@ -451,8 +455,128 @@ function ExceptionsContent() {
     }
   }
 
+  // ── "Remove Order" handler (protein exceptions only) ──────────────────────
+  // Soft-deletes the underlying order_line and closes the exception.
+  async function handleRemoveOrder(ex: OpenOrderException, reason: string, notes: string) {
+    setResolvingId(ex.id);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/exceptions/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          exceptionId: ex.id,
+          action: "remove_order",
+          deleteReason: reason || "other",
+          deleteNotes: notes.trim() || undefined,
+          deletedBy: "operator",
+        }),
+      });
+
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok) throw new Error(data.error ?? "Failed to remove order.");
+
+      showSuccess("Order removed. It will no longer count in production totals.");
+      const remaining = exceptions.filter((row) => row.id !== ex.id);
+      setExceptions(remaining);
+      if (remaining.length === 0 && statusFilter === "Open") setResolvedAll(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to remove order.");
+    } finally {
+      setResolvingId(null);
+      setRemoveOrderTarget(null);
+      setRemoveReason("");
+      setRemoveNotes("");
+    }
+  }
+
+  const REMOVE_REASONS = [
+    { value: "customer_cancelled", label: "Customer cancelled order" },
+    { value: "duplicate_order", label: "Duplicate order" },
+    { value: "wrong_customer", label: "Wrong customer" },
+    { value: "wrong_service_date", label: "Wrong service date" },
+    { value: "employee_no_longer_requires_meal", label: "Employee no longer requires meal" },
+    { value: "incorrect_manual_entry", label: "Incorrect manual entry" },
+    { value: "other", label: "Other" },
+  ];
+
   // ─────────────────────────────────────────────────────────────────────────
   return (
+    <>
+    {/* ── Remove Order confirmation modal ── */}
+    {removeOrderTarget && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+        <div className="w-full max-w-md rounded-2xl bg-white shadow-xl dark:bg-zinc-900">
+          <div className="flex items-center justify-between border-b border-zinc-200 px-6 py-4 dark:border-zinc-800">
+            <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">Remove Order</h2>
+            <button
+              type="button"
+              onClick={() => { setRemoveOrderTarget(null); setRemoveReason(""); setRemoveNotes(""); }}
+              className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+            >✕</button>
+          </div>
+          <div className="px-6 py-5">
+            <p className="mb-3 text-sm text-zinc-600 dark:text-zinc-400">
+              Remove this order from production entirely. The meal will no longer count
+              toward Order Review totals, protein counts, or kitchen quantities.
+            </p>
+            <div className="mb-4 rounded-md border border-zinc-100 bg-zinc-50 px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+              <p className="font-medium text-zinc-800 dark:text-zinc-100">{removeOrderTarget.employee_ref}</p>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">{removeOrderTarget.raw_value}</p>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                  Reason <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={removeReason}
+                  onChange={(e) => setRemoveReason(e.target.value)}
+                  className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+                >
+                  <option value="">Select a reason…</option>
+                  {REMOVE_REASONS.map((r) => (
+                    <option key={r.value} value={r.value}>{r.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                  Notes (optional)
+                </label>
+                <textarea
+                  value={removeNotes}
+                  onChange={(e) => setRemoveNotes(e.target.value)}
+                  rows={2}
+                  placeholder="Any additional detail…"
+                  className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100"
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => { setRemoveOrderTarget(null); setRemoveReason(""); setRemoveNotes(""); }}
+                  disabled={resolvingId === removeOrderTarget.id}
+                  className="rounded-md border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!removeReason || resolvingId === removeOrderTarget.id}
+                  onClick={() => handleRemoveOrder(removeOrderTarget, removeReason, removeNotes)}
+                  className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                >
+                  {resolvingId === removeOrderTarget.id ? "Removing…" : "Remove Order"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
     <div className="flex flex-1 bg-zinc-50 px-4 py-12 font-sans dark:bg-black">
       <main className="mx-auto w-full max-w-3xl">
 
@@ -1063,6 +1187,18 @@ function ExceptionsContent() {
                             Mark protein not required
                           </button>
                         )}
+                        {/* Protein-only: remove the underlying order entirely */}
+                        {isProtein && (
+                          <button
+                            type="button"
+                            disabled={isResolving}
+                            onClick={() => setRemoveOrderTarget(ex)}
+                            className="rounded-md border border-red-300 bg-red-50 px-4 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:bg-red-950/40 dark:text-red-400 dark:hover:bg-red-900/40"
+                            title="Removes this order from production entirely — it will not count in any totals"
+                          >
+                            Remove Order
+                          </button>
+                        )}
                       </div>
                     </>
                   )}
@@ -1073,6 +1209,7 @@ function ExceptionsContent() {
         )}
       </main>
     </div>
+    </>
   );
 }
 

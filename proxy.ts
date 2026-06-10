@@ -16,9 +16,15 @@ export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // ── 1. Create a Supabase server client that can refresh the session cookie ──
-  const response = NextResponse.next({
-    request: { headers: request.headers },
-  });
+  //
+  // IMPORTANT: `response` is declared with `let` so that `setAll` can reassign
+  // it to a NEW NextResponse.next({ request }) after updating request.cookies.
+  // This ensures the route handler downstream receives the refreshed access
+  // token rather than the stale/expired one.  If we don't reassign here, the
+  // initially-created response still forwards the old Cookie header, causing
+  // getUser() inside the route handler to verify an expired token and return
+  // null — which surfaces as an erroneous 401 "Unauthorized".
+  let response = NextResponse.next({ request });
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -29,9 +35,15 @@ export async function proxy(request: NextRequest) {
           return request.cookies.getAll();
         },
         setAll(cookiesToSet) {
+          // 1. Update the in-memory request cookies so subsequent reads are fresh.
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value),
           );
+          // 2. Recreate the forwarded response so the route handler picks up the
+          //    refreshed token from request.cookies (the headers now carry the
+          //    new access token).
+          response = NextResponse.next({ request });
+          // 3. Set Set-Cookie on the response so the browser stores the new token.
           cookiesToSet.forEach(({ name, value, options }) =>
             response.cookies.set(name, value, options),
           );

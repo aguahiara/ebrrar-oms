@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ServiceDayPicker } from "@/app/(app)/dashboard/service-day-picker";
 import {
   type ConsolidatedRow,
+  type CustomerRef,
   type ProductionCustomerRow,
   fetchProductionDailyDashboard,
   formatServiceDayLabel,
@@ -18,15 +19,17 @@ function ConsolidatedTable({
   firstColLabel,
   rows,
   customers,
+  serviceDay,
 }: {
   firstColLabel: string;
   rows: ConsolidatedRow[];
-  customers: string[];
+  customers: CustomerRef[];
+  serviceDay: string;
 }) {
   if (rows.length === 0) return null;
 
   const colTotals = customers.map((c) =>
-    rows.reduce((sum, r) => sum + (r.counts[c] ?? 0), 0),
+    rows.reduce((sum, r) => sum + (r.counts[c.name] ?? 0), 0),
   );
   const grand = colTotals.reduce((a, b) => a + b, 0);
 
@@ -40,10 +43,16 @@ function ConsolidatedTable({
             </th>
             {customers.map((c) => (
               <th
-                key={c}
+                key={c.id}
                 className="px-4 py-3 text-right font-medium text-zinc-900 dark:text-zinc-50"
               >
-                {c}
+                <Link
+                  href={`/dashboard/customer-orders?customerId=${c.id}&serviceDay=${serviceDay}&from=dashboard`}
+                  className="underline decoration-dotted underline-offset-2 hover:text-emerald-700 dark:hover:text-emerald-400 transition-colors"
+                  aria-label={`View orders for ${c.name}`}
+                >
+                  {c.name}
+                </Link>
               </th>
             ))}
             <th className="px-4 py-3 text-right font-medium text-zinc-900 dark:text-zinc-50">
@@ -62,10 +71,10 @@ function ConsolidatedTable({
               </td>
               {customers.map((c) => (
                 <td
-                  key={c}
+                  key={c.id}
                   className="px-4 py-3 text-right tabular-nums text-zinc-700 dark:text-zinc-300"
                 >
-                  {row.counts[c] ?? 0}
+                  {row.counts[c.name] ?? 0}
                 </td>
               ))}
               <td className="px-4 py-3 text-right font-medium tabular-nums text-zinc-900 dark:text-zinc-50">
@@ -79,7 +88,7 @@ function ConsolidatedTable({
             </td>
             {colTotals.map((t, i) => (
               <td
-                key={customers[i]}
+                key={customers[i].id}
                 className="px-4 py-3 text-right tabular-nums text-zinc-900 dark:text-zinc-50"
               >
                 {t}
@@ -97,7 +106,13 @@ function ConsolidatedTable({
 
 // ─── Per-customer breakdown card ─────────────────────────────────────────────
 
-function CustomerBreakdownCard({ row }: { row: ProductionCustomerRow }) {
+function CustomerBreakdownCard({
+  row,
+  serviceDay,
+}: {
+  row: ProductionCustomerRow;
+  serviceDay: string;
+}) {
   const releasedDate = row.releasedAt
     ? new Date(row.releasedAt).toLocaleString(undefined, {
         dateStyle: "medium",
@@ -110,8 +125,14 @@ function CustomerBreakdownCard({ row }: { row: ProductionCustomerRow }) {
       {/* Card header */}
       <div className="flex items-center justify-between border-b border-zinc-100 bg-zinc-50 px-5 py-4 dark:border-zinc-800 dark:bg-zinc-900">
         <div>
-          <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-            {row.customerName}
+          <p className="text-sm font-semibold">
+            <Link
+              href={`/dashboard/customer-orders?customerId=${row.customerId}&serviceDay=${serviceDay}&from=dashboard`}
+              className="text-emerald-700 underline decoration-dotted underline-offset-2 hover:text-emerald-600 hover:decoration-solid dark:text-emerald-400 dark:hover:text-emerald-300 transition-colors"
+              aria-label={`View orders for ${row.customerName}`}
+            >
+              {row.customerName}
+            </Link>
           </p>
           {releasedDate && (
             <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
@@ -309,6 +330,7 @@ export default async function ProductionDailyDashboardPage({ searchParams }: Pag
               firstColLabel="Meal"
               rows={data.mealRows}
               customers={data.customers}
+              serviceDay={serviceDay}
             />
 
             {/* Consolidated proteins table */}
@@ -321,6 +343,7 @@ export default async function ProductionDailyDashboardPage({ searchParams }: Pag
                   firstColLabel="Protein"
                   rows={data.proteinRows}
                   customers={data.customers}
+                  serviceDay={serviceDay}
                 />
               </>
             )}
@@ -335,6 +358,7 @@ export default async function ProductionDailyDashboardPage({ searchParams }: Pag
                   firstColLabel="Swallow"
                   rows={data.swallowRows}
                   customers={data.customers}
+                  serviceDay={serviceDay}
                 />
               </>
             )}
@@ -345,7 +369,7 @@ export default async function ProductionDailyDashboardPage({ searchParams }: Pag
             </h2>
             <div className="space-y-4">
               {data.customerRows.map((row) => (
-                <CustomerBreakdownCard key={row.customerId} row={row} />
+                <CustomerBreakdownCard key={row.customerId} row={row} serviceDay={serviceDay} />
               ))}
             </div>
           </>

@@ -4,6 +4,7 @@ import { ServiceDayPicker } from "@/app/(app)/dashboard/service-day-picker";
 import { getAppSession } from "@/lib/auth";
 import {
   type ConsolidatedRow,
+  type CustomerRef,
   fetchConsolidatedDashboard,
   formatServiceDayLabel,
   parseServiceDayParam,
@@ -17,13 +18,17 @@ function ConsolidatedTable({
   firstColLabel,
   rows,
   customers,
+  serviceDay,
+  from,
 }: {
   firstColLabel: string;
   rows: ConsolidatedRow[];
-  customers: string[];
+  customers: CustomerRef[];
+  serviceDay: string;
+  from: string;
 }) {
   const colTotals = customers.map((c) =>
-    rows.reduce((sum, r) => sum + (r.counts[c] ?? 0), 0),
+    rows.reduce((sum, r) => sum + (r.counts[c.name] ?? 0), 0),
   );
   const grand = colTotals.reduce((a, b) => a + b, 0);
 
@@ -37,10 +42,16 @@ function ConsolidatedTable({
             </th>
             {customers.map((c) => (
               <th
-                key={c}
+                key={c.id}
                 className="px-4 py-3 text-right font-medium text-zinc-900 dark:text-zinc-50"
               >
-                {c}
+                <Link
+                  href={`/dashboard/customer-orders?customerId=${c.id}&serviceDay=${serviceDay}&from=${from}`}
+                  className="underline decoration-dotted underline-offset-2 hover:text-emerald-700 dark:hover:text-emerald-400 transition-colors"
+                  aria-label={`View orders for ${c.name}`}
+                >
+                  {c.name}
+                </Link>
               </th>
             ))}
             <th className="px-4 py-3 text-right font-medium text-zinc-900 dark:text-zinc-50">
@@ -69,10 +80,10 @@ function ConsolidatedTable({
                 </td>
                 {customers.map((c) => (
                   <td
-                    key={c}
+                    key={c.id}
                     className="px-4 py-3 text-right tabular-nums text-zinc-700 dark:text-zinc-300"
                   >
-                    {row.counts[c] ?? 0}
+                    {row.counts[c.name] ?? 0}
                   </td>
                 ))}
                 <td className="px-4 py-3 text-right font-medium tabular-nums text-zinc-900 dark:text-zinc-50">
@@ -88,7 +99,7 @@ function ConsolidatedTable({
               </td>
               {colTotals.map((t, i) => (
                 <td
-                  key={customers[i]}
+                  key={customers[i].id}
                   className="px-4 py-3 text-right tabular-nums text-zinc-900 dark:text-zinc-50"
                 >
                   {t}
@@ -201,6 +212,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
               firstColLabel="Meal"
               rows={data.mealRows}
               customers={data.customers}
+              serviceDay={serviceDay}
+              from="order-review"
             />
 
             <h2 className="mb-3 mt-8 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
@@ -210,6 +223,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
               firstColLabel="Protein"
               rows={data.proteinRows}
               customers={data.customers}
+              serviceDay={serviceDay}
+              from="order-review"
             />
           </>
         )}
