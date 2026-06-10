@@ -56,7 +56,8 @@ export async function checkPortionReadiness(
       .select("menu_item:menu_item_id(category)")
       .eq("customer_id", customerId)
       .eq("service_day", serviceDay)
-      .not("menu_item_id", "is", null);
+      .not("menu_item_id", "is", null)
+      .is("deleted_at", null);
 
     if (error)
       throw new Error(`Failed to fetch meal categories: ${error.message}`);

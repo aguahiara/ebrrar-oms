@@ -138,7 +138,8 @@ export async function POST(request: Request) {
       .from("order_line")
       .select("id", { count: "exact", head: true })
       .eq("customer_id", customerId)
-      .eq("service_day", serviceDay);
+      .eq("service_day", serviceDay)
+      .is("deleted_at", null);
 
     if (orderCountError)
       throw new Error(
@@ -231,7 +232,8 @@ export async function POST(request: Request) {
       .eq("customer_id", customerId)
       .eq("service_day", serviceDay)
       .is("menu_item_id", null)
-      .neq("match_type", "FruitsOnly");
+      .neq("match_type", "FruitsOnly")
+      .is("deleted_at", null);
 
     if (unmatchedError)
       throw new Error(
@@ -263,7 +265,8 @@ export async function POST(request: Request) {
       .eq("customer_id", customerId)
       .eq("service_day", serviceDay)
       .is("protein_name", null)
-      .neq("match_type", "FruitsOnly");
+      .neq("match_type", "FruitsOnly")
+      .is("deleted_at", null);
 
     if (proteinFetchErr)
       throw new Error(

@@ -49,10 +49,11 @@ async function fetchMealCountsByCategory(
 ): Promise<MealCategoryCount[]> {
   const { data, error } = await supabase
     .from("order_line")
-    .select("menu_item:menu_item_id(category)")
+    .select("menu_item:menu_item_id(category), quantity")
     .eq("customer_id", customerId)
     .eq("service_day", serviceDay)
-    .not("menu_item_id", "is", null);
+    .not("menu_item_id", "is", null)
+    .is("deleted_at", null);
 
   if (error) throw new Error(`Failed to load order lines: ${error.message}`);
 
@@ -64,7 +65,9 @@ async function fetchMealCountsByCategory(
         ? String(mi.category)
         : null;
     if (!cat) continue;
-    counts.set(cat, (counts.get(cat) ?? 0) + 1);
+    // quantity is stored per-row (Option A); sum rather than count.
+    const qty = Math.max(1, Number((row as Record<string, unknown>).quantity) || 1);
+    counts.set(cat, (counts.get(cat) ?? 0) + qty);
   }
 
   return [...counts.entries()].map(([category, count]) => ({ category, count }));

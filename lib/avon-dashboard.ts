@@ -70,10 +70,13 @@ export type CustomerDashboardCard = {
   manualOrderCount: number;
 };
 
+/** Customer identity record used for column headers and drill-down links. */
+export type CustomerRef = { id: string; name: string };
+
 export type ConsolidatedDashboard = {
   serviceDay: string;
-  /** Display names — only customers that have ≥1 order line */
-  customers: string[];
+  /** Customers that have ≥1 order line — includes id for drill-down links. */
+  customers: CustomerRef[];
   mealRows: ConsolidatedRow[];
   proteinRows: ConsolidatedRow[];
   grandTotal: number;
@@ -139,10 +142,12 @@ export async function fetchConsolidatedDashboard(
          match_type,
          protein_name,
          order_source,
+         quantity,
          customer ( display_name ),
          menu_item ( canonical_name, category, protein_requirement )`,
       )
-      .eq("service_day", serviceDay),
+      .eq("service_day", serviceDay)
+      .is("deleted_at", null),
 
     // Fetch ALL exceptions (all statuses) so we can compute both the open count
     // and the true "total uploaded" figure (see totalUploaded on the card type).
@@ -243,14 +248,16 @@ export async function fetchConsolidatedDashboard(
     }
 
     const g = byCustomer.get(custId)!;
-    g.totalOrders += 1;
+    // quantity is stored per-row (Option A); sum rather than count for correct totals.
+    const qty = Math.max(1, Number((line as Record<string, unknown>).quantity) || 1);
+    g.totalOrders += qty;
 
     // Source breakdown: NULL or 'bulk_upload' = uploaded; anything else = manual.
     const lineSource = (line as Record<string, unknown>).order_source;
     if (lineSource === null || lineSource === undefined || lineSource === "bulk_upload") {
-      g.bulkUploadCount += 1;
+      g.bulkUploadCount += qty;
     } else {
-      g.manualOrderCount += 1;
+      g.manualOrderCount += qty;
     }
 
     // Matched = has a menu_item_id OR is a FruitsOnly line (menu_item_id stays
@@ -259,13 +266,13 @@ export async function fetchConsolidatedDashboard(
       (line as Record<string, unknown>).match_type === "FruitsOnly";
 
     if (line.menu_item_id !== null) {
-      g.matchedOrders += 1;
+      g.matchedOrders += qty;
       const mi = Array.isArray(line.menu_item) ? line.menu_item[0] : line.menu_item;
       const miObj =
         mi && typeof mi === "object" ? (mi as Record<string, unknown>) : null;
       const meal =
         miObj && "canonical_name" in miObj ? String(miObj.canonical_name) : null;
-      if (meal) g.mealMap.set(meal, (g.mealMap.get(meal) ?? 0) + 1);
+      if (meal) g.mealMap.set(meal, (g.mealMap.get(meal) ?? 0) + qty);
       const cat =
         miObj && "category" in miObj && miObj.category
           ? String(miObj.category)
@@ -274,8 +281,8 @@ export async function fetchConsolidatedDashboard(
     } else if (isFruitsOnlyLine) {
       // FruitsOnly orders are production-ready; count them as matched and add
       // a "Fruits Only" label to the meal breakdown.
-      g.matchedOrders += 1;
-      g.mealMap.set("Fruits Only", (g.mealMap.get("Fruits Only") ?? 0) + 1);
+      g.matchedOrders += qty;
+      g.mealMap.set("Fruits Only", (g.mealMap.get("Fruits Only") ?? 0) + qty);
     }
 
     // Protein — skip the "(No protein)" sentinel used for FruitsOnly and
@@ -283,7 +290,7 @@ export async function fetchConsolidatedDashboard(
     if (line.protein_name) {
       const p = String(line.protein_name);
       if (p !== "(No protein)") {
-        g.proteinMap.set(p, (g.proteinMap.get(p) ?? 0) + 1);
+        g.proteinMap.set(p, (g.proteinMap.get(p) ?? 0) + qty);
       }
     } else if (line.menu_item_id !== null) {
       // Only count as "missing protein" when:
@@ -393,7 +400,7 @@ export async function fetchConsolidatedDashboard(
   // Alphabetical by customer name
   cards.sort((a, b) => a.customerName.localeCompare(b.customerName));
 
-  const customers = cards.map((c) => c.customerName);
+  const customers: CustomerRef[] = cards.map((c) => ({ id: c.customerId, name: c.customerName }));
   // grandTotal drives the consolidated meal/protein tables and the page header count.
   // It uses matchedOrders (= production-ready lines) so it stays consistent with the
   // table rows, which are derived from mealCounts/proteinCounts (matched only).
@@ -429,8 +436,8 @@ export type ProductionCustomerRow = {
 export type ProductionDailyDashboard = {
   serviceDay: string;
   releasedCustomerCount: number;
-  /** Display names of released customers in alphabetical order. */
-  customers: string[];
+  /** Released customers in alphabetical order — includes id for drill-down links. */
+  customers: CustomerRef[];
   mealRows: ConsolidatedRow[];
   proteinRows: ConsolidatedRow[];
   swallowRows: ConsolidatedRow[];
@@ -469,7 +476,7 @@ export async function fetchProductionDailyDashboard(
     return {
       serviceDay,
       releasedCustomerCount: 0,
-      customers: [],
+      customers: [] as CustomerRef[],
       mealRows: [],
       proteinRows: [],
       swallowRows: [],
@@ -495,12 +502,14 @@ export async function fetchProductionDailyDashboard(
       match_type,
       protein_name,
       swallow_name,
+      quantity,
       customer ( display_name ),
       menu_item ( canonical_name )
     `,
     )
     .eq("service_day", serviceDay)
-    .in("customer_id", releasedCustomerIds);
+    .in("customer_id", releasedCustomerIds)
+    .is("deleted_at", null);
 
   if (linesErr)
     throw new Error(`Failed to load order lines: ${linesErr.message}`);
@@ -537,7 +546,9 @@ export async function fetchProductionDailyDashboard(
     }
 
     const g = byCustomer.get(custId)!;
-    g.totalMeals += 1;
+    // quantity is stored per-row (Option A); sum rather than count for correct totals.
+    const qty = Math.max(1, Number((line as Record<string, unknown>).quantity) || 1);
+    g.totalMeals += qty;
 
     // Meal name — FruitsOnly lines have menu_item_id = null but are still
     // production-ready meals that should appear in the breakdown.
@@ -550,9 +561,9 @@ export async function fetchProductionDailyDashboard(
         mi && typeof mi === "object" ? (mi as Record<string, unknown>) : null;
       const meal =
         miObj && "canonical_name" in miObj ? String(miObj.canonical_name) : null;
-      if (meal) g.mealMap.set(meal, (g.mealMap.get(meal) ?? 0) + 1);
+      if (meal) g.mealMap.set(meal, (g.mealMap.get(meal) ?? 0) + qty);
     } else if (isProdFruitsOnly) {
-      g.mealMap.set("Fruits Only", (g.mealMap.get("Fruits Only") ?? 0) + 1);
+      g.mealMap.set("Fruits Only", (g.mealMap.get("Fruits Only") ?? 0) + qty);
     }
 
     // Protein — skip the "(No protein)" sentinel used for FruitsOnly and
@@ -560,14 +571,14 @@ export async function fetchProductionDailyDashboard(
     if (line.protein_name) {
       const p = String(line.protein_name);
       if (p !== "(No protein)") {
-        g.proteinMap.set(p, (g.proteinMap.get(p) ?? 0) + 1);
+        g.proteinMap.set(p, (g.proteinMap.get(p) ?? 0) + qty);
       }
     }
 
     // Swallow
     if (line.swallow_name) {
       const s = String(line.swallow_name);
-      g.swallowMap.set(s, (g.swallowMap.get(s) ?? 0) + 1);
+      g.swallowMap.set(s, (g.swallowMap.get(s) ?? 0) + qty);
     }
   }
 
@@ -596,7 +607,7 @@ export async function fetchProductionDailyDashboard(
   // Alphabetical
   customerRows.sort((a, b) => a.customerName.localeCompare(b.customerName));
 
-  const customers = customerRows.map((r) => r.customerName);
+  const customers: CustomerRef[] = customerRows.map((r) => ({ id: r.customerId, name: r.customerName }));
   const grandTotal = customerRows.reduce((sum, r) => sum + r.totalMeals, 0);
 
   const mealRows = pivot(customerRows, (r) =>

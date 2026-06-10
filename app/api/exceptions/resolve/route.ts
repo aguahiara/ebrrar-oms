@@ -4,7 +4,7 @@ import { PROTEIN_EXCEPTION_TYPE } from "@/lib/avon-orders";
 import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
 
-type ResolveAction = "map" | "drop" | "accept";
+type ResolveAction = "map" | "drop" | "accept" | "remove_order";
 type BulkScope = "service_day" | "all";
 
 type ResolveBody = {
@@ -24,6 +24,12 @@ type ResolveBody = {
   applyToSimilar?: boolean;
   /** "service_day" (default) = same service day; "all" = any date. */
   scope?: BulkScope;
+  /** Required when action = "remove_order". */
+  deleteReason?: string;
+  /** Optional notes when action = "remove_order". */
+  deleteNotes?: string;
+  /** Actor identity (email/name) for the audit trail when action = "remove_order". */
+  deletedBy?: string;
 };
 
 // ─── Helper: resolve one exception record ────────────────────────────────────
@@ -37,6 +43,9 @@ async function resolveOne(params: {
   resolvedAt: string;
   bulkApplied: boolean;
   sourceExceptionId: string | null;
+  deleteReason?: string;
+  deleteNotes?: string;
+  deletedBy?: string;
   /** The full exception row, already fetched. */
   exception: {
     order_batch_id: string;
@@ -57,8 +66,58 @@ async function resolveOne(params: {
     resolvedAt,
     bulkApplied,
     sourceExceptionId,
+    deleteReason,
+    deleteNotes,
+    deletedBy,
     exception,
   } = params;
+
+  // ── Remove Order: soft-delete the underlying order_line + close exception ─
+  // Only applicable to protein exceptions (meal exceptions have no order_line).
+  if (action === "remove_order") {
+    if (exception.exception_type === PROTEIN_EXCEPTION_TYPE) {
+      const { data: orderLine } = await supabase
+        .from("order_line")
+        .select("id")
+        .eq("order_batch_id", exception.order_batch_id)
+        .eq("customer_id", exception.customer_id)
+        .eq("service_day", exception.service_day)
+        .eq("employee_ref", exception.employee_ref)
+        .is("deleted_at", null)
+        .maybeSingle();
+
+      if (orderLine?.id) {
+        const { error: delErr } = await supabase
+          .from("order_line")
+          .update({
+            deleted_at: resolvedAt,
+            deleted_by: deletedBy ?? "operator",
+            delete_reason: deleteReason ?? "other",
+            delete_notes: deleteNotes ?? null,
+            deletion_source: "exceptions_page",
+            deletion_scope: "individual",
+          })
+          .eq("id", orderLine.id);
+        if (delErr)
+          throw new Error(`Failed to soft-delete order line: ${delErr.message}`);
+      }
+    }
+
+    // Close the exception regardless of type
+    const { error: exErr } = await supabase
+      .from("order_exception")
+      .update({
+        status: "Resolved",
+        resolved_by: deletedBy ?? "operator",
+        resolved_at: resolvedAt,
+        resolution_reason: "order_removed",
+        bulk_applied: bulkApplied,
+        source_exception_id: sourceExceptionId,
+      })
+      .eq("id", exceptionId);
+    if (exErr) throw new Error(`Failed to close exception: ${exErr.message}`);
+    return;
+  }
 
   // ── Protein-exception path: update the existing order_line, never insert ──
   if (exception.exception_type === PROTEIN_EXCEPTION_TYPE) {
@@ -70,6 +129,7 @@ async function resolveOne(params: {
       .eq("customer_id", exception.customer_id)
       .eq("service_day", exception.service_day)
       .eq("employee_ref", exception.employee_ref)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (lineErr)
@@ -264,6 +324,9 @@ export async function POST(request: Request) {
       saveAsNotRequired = false,
       applyToSimilar = false,
       scope = "service_day",
+      deleteReason,
+      deleteNotes,
+      deletedBy,
     } = body;
 
     // ── Validate input ───────────────────────────────────────────────────────
@@ -273,7 +336,7 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    if (!["map", "drop", "accept"].includes(action)) {
+    if (!["map", "drop", "accept", "remove_order"].includes(action)) {
       return NextResponse.json({ error: "Invalid action." }, { status: 400 });
     }
     if (action === "map" && !menuItemId && !proteinName) {
@@ -315,6 +378,9 @@ export async function POST(request: Request) {
       resolvedAt,
       bulkApplied: false,
       sourceExceptionId: null,
+      deleteReason,
+      deleteNotes,
+      deletedBy,
       exception: {
         order_batch_id: exception.order_batch_id,
         customer_id: exception.customer_id,
