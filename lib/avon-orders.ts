@@ -6,6 +6,7 @@ import {
   hasNoProteinAnnotation,
   isGenericSwallow,
   isNoLunchEntry,
+  isSoupMeal,
   parseOrderText,
   stripNoProteinAnnotation,
 } from "@/lib/parse-order";
@@ -299,7 +300,7 @@ export async function resolveOrders(
 
       // Explicit protein/swallow columns (Elcrest/Energia) take precedence over
       // values extracted from the meal text (AVON/HGI).
-      const proteinName =
+      let proteinName: string | null =
         order.proteinRaw !== undefined
           ? canonicalizeVocab(order.proteinRaw, dayProteins)
           : decomposed.proteinName;
@@ -322,6 +323,28 @@ export async function resolveOrders(
           : decomposed.swallowName;
       const mealRemainder = decomposed.mealRemainder;
       const sideItems     = decomposed.sideItems;
+
+      // ── Soup default protein (Business Rule §Soup) ───────────────────────────
+      // When no protein was extracted AND the order does not carry a no-protein
+      // annotation AND the meal text identifies a soup, default proteinName to
+      // "Beef" — but only when "Beef" is present in the day's protein vocabulary
+      // so we never store a protein that does not exist on the menu.
+      if (proteinName === null && !orderNoProtein) {
+        const soupTextToCheck = mealRemainder || effectiveMealText;
+        const beefCanonical = dayProteins.find(
+          (p) => p.toLowerCase() === "beef",
+        ) ?? null;
+        if (beefCanonical && isSoupMeal(soupTextToCheck)) {
+          proteinName = beefCanonical;
+          if (process.env.NODE_ENV === "development") {
+            console.log("[resolveOrders] soupDefaultProtein → Beef", {
+              employee: order.employeeName,
+              raw: order.rawMealText,
+              soupText: soupTextToCheck,
+            });
+          }
+        }
+      }
 
       // ── Step 0b: detect "Fruits Only" on the meal remainder (post-decompose) ─
       // Catches "Fruits Only + Chicken" where decomposeMeal stripped "Chicken".
@@ -660,6 +683,104 @@ export async function persistUpload(params: {
   return { batchId: batch.id, linesInserted, exceptionsInserted, duplicatesSkipped };
 }
 
+// ─── Manual order protein-default helpers (shared by POST and PATCH routes) ───
+
+/**
+ * Input shape used by both the POST and PATCH manual-order API routes before
+ * mapping to ManualOrderLine.  Defined here so the shared helper below can
+ * reference it without re-importing from a route file.
+ */
+export type ManualOrderLineInput = {
+  employeeName?: string | null;
+  menuItemId: string | null;
+  mealNameRaw: string;
+  matchType: "Direct" | "FruitsOnly";
+  proteinName?: string | null;
+  swallowName?: string | null;
+  sideName?: string | null;
+  quantity: number;
+  notes?: string | null;
+  orderSource: ManualOrderSource;
+};
+
+/**
+ * Apply soup-default protein (PI2) and PI3 optional-protein downgrade to a
+ * list of raw manual order line inputs, given pre-fetched menu-item metadata.
+ *
+ * Mutates `lines[].proteinName` in-place (soup default) and returns a mapped
+ * array of `ManualOrderLine` objects ready to pass to `persistManualOrders` or
+ * to a direct Supabase insert.
+ *
+ * Rules applied:
+ *   PI2 — If the line has no protein, the matched meal is a soup, and the
+ *          menu item requires protein, silently default to "Beef".
+ *   PI3 — If protein is still blank after PI2, downgrade proteinRequirement
+ *          from "required" → "optional" so the "(No protein)" sentinel is
+ *          written rather than null (prevents the release-guard
+ *          missingProtein counter from blocking release for intentionally
+ *          proteinless non-soup manual orders).
+ */
+export function applyManualOrderDefaults(
+  lines: ManualOrderLineInput[],
+  proteinReqById: ReadonlyMap<string, string>,
+  canonicalById: ReadonlyMap<string, string>,
+): ManualOrderLine[] {
+  // Lazy import to avoid circular dependency (parse-order ← avon-orders):
+  // We resolve at call time so tree-shaking is not affected.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { isSoupMeal, hasNoProteinAnnotation } = require("@/lib/parse-order") as {
+    isSoupMeal: (t: string) => boolean;
+    hasNoProteinAnnotation: (t: string) => boolean;
+  };
+
+  // ── PI2: Soup default protein ──────────────────────────────────────────────
+  for (const l of lines) {
+    if (l.matchType === "Direct" && l.menuItemId && !l.proteinName?.trim()) {
+      const canonical = canonicalById.get(l.menuItemId) ?? l.mealNameRaw;
+      const req = proteinReqById.get(l.menuItemId) ?? "required";
+      if (
+        req === "required" &&
+        !hasNoProteinAnnotation(l.mealNameRaw ?? "") &&
+        isSoupMeal(canonical)
+      ) {
+        l.proteinName = "Beef";
+      }
+    }
+  }
+
+  // ── PI3: map to ManualOrderLine with optional-protein downgrade ────────────
+  return lines.map((l): ManualOrderLine => {
+    const dbProteinReq: "required" | "optional" | "not_required" =
+      l.matchType === "FruitsOnly"
+        ? "not_required"
+        : l.menuItemId
+          ? ((proteinReqById.get(l.menuItemId) ?? "required") as
+              | "required"
+              | "optional"
+              | "not_required")
+          : "required";
+
+    const proteinRequirement: "required" | "optional" | "not_required" =
+      !l.proteinName?.trim() && dbProteinReq === "required"
+        ? "optional"
+        : dbProteinReq;
+
+    return {
+      employeeName:  l.employeeName?.trim() || null,
+      menuItemId:    l.menuItemId ?? null,
+      mealNameRaw:   l.mealNameRaw.trim(),
+      matchType:     l.matchType,
+      proteinRequirement,
+      proteinName:   l.proteinName?.trim() || null,
+      swallowName:   l.swallowName?.trim() || null,
+      sideName:      l.sideName?.trim() || null,
+      quantity:      l.quantity,
+      notes:         l.notes?.trim() || null,
+      orderSource:   l.orderSource,
+    };
+  });
+}
+
 // ─── Manual Order types ───────────────────────────────────────────────────────
 
 export type ManualOrderSource =
@@ -668,15 +789,32 @@ export type ManualOrderSource =
   | "special_order";
 
 export type ManualOrderLine = {
+  /**
+   * Optional display name for this order slot.  When null / empty,
+   * persistManualOrders auto-generates EXTRA-n (corporate) or SPECIAL-n
+   * (special order), scoped to the customer + service day.
+   */
+  employeeName?: string | null;
   /** Matched menu item ID; null for FruitsOnly. */
   menuItemId: string | null;
   /** Display label used as meal_name_raw. */
   mealNameRaw: string;
   /** Always "Direct" for menu-selected items or "FruitsOnly". */
   matchType: "Direct" | "FruitsOnly";
+  /**
+   * Protein requirement of the selected menu item.  Used to determine whether
+   * to write the "(No protein)" sentinel so release Guard 4 is not triggered.
+   * Defaults to "required" when omitted.
+   */
+  proteinRequirement?: "required" | "optional" | "not_required";
   proteinName: string | null;
   swallowName: string | null;
   sideName: string | null;
+  /**
+   * Number of individual meal slots this line represents.  Stored as-is in
+   * the order_line.quantity column; all aggregation functions sum quantity
+   * rather than counting rows.
+   */
   quantity: number;
   notes: string | null;
   orderSource: ManualOrderSource;
@@ -729,22 +867,82 @@ export async function persistManualOrders(params: {
     return { batchId: batch.id, linesInserted: 0 };
   }
 
-  const lineRows = params.lines.map((line) => ({
-    order_batch_id: batch.id,
-    customer_id: params.customerId,
-    service_day: params.serviceDay,
-    menu_item_id: line.menuItemId,
-    meal_name_raw: line.mealNameRaw,
-    employee_ref: null,
-    quantity: line.quantity,
-    match_type: line.matchType,
-    protein_name:
-      line.matchType === "FruitsOnly" ? "(No protein)" : (line.proteinName ?? null),
-    swallow_name: line.swallowName ?? null,
-    side_name: line.sideName ?? null,
-    line_notes: line.notes ?? null,
-    order_source: line.orderSource,
-  }));
+  // ── Auto-generate employee refs for unnamed lines ─────────────────────────
+  // Count existing EXTRA-n and SPECIAL-n already stored for this customer +
+  // service day so new auto-names continue the sequence rather than restarting
+  // from 1.  Two parallel queries — one per prefix.
+  const [extrasRes, specialsRes] = await Promise.all([
+    supabase
+      .from("order_line")
+      .select("employee_ref")
+      .eq("customer_id", params.customerId)
+      .eq("service_day", params.serviceDay)
+      .like("employee_ref", "EXTRA-%"),
+    supabase
+      .from("order_line")
+      .select("employee_ref")
+      .eq("customer_id", params.customerId)
+      .eq("service_day", params.serviceDay)
+      .like("employee_ref", "SPECIAL-%"),
+  ]);
+
+  let maxExtraNum = 0;
+  for (const r of extrasRes.data ?? []) {
+    const m = /^EXTRA-(\d+)$/i.exec(r.employee_ref ?? "");
+    if (m) maxExtraNum = Math.max(maxExtraNum, parseInt(m[1], 10));
+  }
+
+  let maxSpecialNum = 0;
+  for (const r of specialsRes.data ?? []) {
+    const m = /^SPECIAL-(\d+)$/i.exec(r.employee_ref ?? "");
+    if (m) maxSpecialNum = Math.max(maxSpecialNum, parseInt(m[1], 10));
+  }
+
+  let extraCounter = maxExtraNum + 1;
+  let specialCounter = maxSpecialNum + 1;
+
+  // ── Build one row per form entry ──────────────────────────────────────────
+  // quantity is stored as-is in the order_line.quantity column; all aggregation
+  // functions sum quantity rather than counting rows (Option A).
+  const lineRows: Record<string, unknown>[] = [];
+
+  for (const line of params.lines) {
+    const baseName = (line.employeeName ?? "").trim() || null;
+
+    // Protein value:
+    //   FruitsOnly or non-required: write the "(No protein)" sentinel so
+    //   release Guard 4 is not triggered.
+    //   Required and provided: write the protein name.
+    //   Required but missing: null — the caller should have validated.
+    const proteinReq = line.proteinRequirement ?? "required";
+    const proteinValue =
+      line.matchType === "FruitsOnly" || proteinReq === "not_required" || proteinReq === "optional"
+        ? (line.proteinName || "(No protein)")
+        : (line.proteinName ?? null);
+
+    // One row per form entry; quantity stored in the quantity column.
+    const employeeRef =
+      baseName ??
+      (line.orderSource === "special_order"
+        ? `SPECIAL-${specialCounter++}`
+        : `EXTRA-${extraCounter++}`);
+
+    lineRows.push({
+      order_batch_id: batch.id,
+      customer_id: params.customerId,
+      service_day: params.serviceDay,
+      menu_item_id: line.menuItemId,
+      meal_name_raw: line.mealNameRaw,
+      employee_ref: employeeRef,
+      quantity: line.quantity,
+      match_type: line.matchType,
+      protein_name: proteinValue,
+      swallow_name: line.swallowName || null,
+      side_name: line.sideName || null,
+      line_notes: line.notes || null,
+      order_source: line.orderSource,
+    });
+  }
 
   const { data: inserted, error: linesError } = await supabase
     .from("order_line")

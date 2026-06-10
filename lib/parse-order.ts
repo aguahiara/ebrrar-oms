@@ -8,7 +8,7 @@
  * consistent (Business Rule §12).
  *
  * Business rules implemented:
- *   §1  — `+`, `with`, and contextually `and` are meal separators.
+ *   §1  — `+`, `,`, `/`, `with`, and contextually `and` are meal separators.
  *   §2  — Main meal is the block before the first recognised separator.
  *   §4  — Menu item canonical names are also split to extract their main meal.
  *   §6  — Garri / Gari are canonicalised to "Eba".
@@ -36,19 +36,21 @@
  *
  * Alternatives (tried left-to-right at each string position — leftmost wins):
  *   1. `+`              — explicit add-on marker.
- *   2. `served with`    — service phrase used in many customer uploads:
+ *   2. `,`              — comma-separated component list ("Semo, Beef").
+ *   3. `/`              — slash-separated component list ("Semo/Beef").
+ *   4. `served with`    — service phrase used in many customer uploads:
  *                         "Edikiankong Soup Served with Semo with Beef".
  *                         Because the regex engine finds the LEFTMOST match,
  *                         " Served with " is found before the plain " with "
  *                         that comes later in the same string, which cleanly
  *                         separates the main meal ("Edikiankong Soup") from
  *                         the add-on portion ("Semo with Beef").
- *   3. `with`           — plain meal/add-on separator.
+ *   5. `with`           — plain meal/add-on separator.
  *
  * Note: `and` is intentionally excluded here; it is a weaker separator
  * handled separately by AND_SEP_RE only when no primary separator is found.
  */
-const PRIMARY_SEP_RE = /\s*\+\s*|\s+served\s+with\s+|\s+with\s+/i;
+const PRIMARY_SEP_RE = /\s*\+\s*|\s*,\s*|\s*\/\s*|\s+served\s+with\s+|\s+with\s+/i;
 
 /**
  * Secondary separator: `and` (case-insensitive, surrounded by required
@@ -75,7 +77,7 @@ const AND_SEP_RE = /\s+and\s+/gi;
  *   "Eba + Fish and Beef"    → ["Eba", "Fish", "Beef"]
  *   "Coleslaw with Chicken"  → ["Coleslaw", "Chicken"]
  */
-const ADDON_SEP_RE = /\s*\+\s*|\s+with\s+|\s+and\s+/gi;
+const ADDON_SEP_RE = /\s*\+\s*|\s*,\s*|\s*\/\s*|\s+with\s+|\s+and\s+/gi;
 
 // ── No-lunch / skip detection ─────────────────────────────────────────────────
 
@@ -159,20 +161,74 @@ export function isGenericSwallow(lower: string): boolean {
   return false;
 }
 
+// ── Soup detection ────────────────────────────────────────────────────────────
+
+/**
+ * Soup-like meal names that do not contain the word "soup" but are still
+ * treated as soup orders for protein-defaulting purposes.
+ *
+ * Each entry is matched as a case-insensitive whole-word prefix of the
+ * (potentially longer) normalized meal text, e.g.:
+ *   "Edikang Ikong with Eba" still matches "edikang ikong".
+ */
+const SOUP_LIKE_MEAL_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bedikang?\s+ikong\b/i,
+  /\bedikiankong\b/i,
+  /\bseafood\s+okr[ao]\b/i,
+  /\bbanga\b/i,
+  /\bofe\b/i,          // Ofe Onugbu, Ofe Ede, etc.
+];
+
+/**
+ * Return true when the meal text represents a soup order.
+ *
+ * Detection strategy (two tiers):
+ *   1. The word "soup" appears anywhere in the text (handles the vast majority:
+ *      "Egusi Soup", "Okro Soup", "Vegetable Soup", "Afang Soup", etc.).
+ *   2. The text matches a known soup-like name that does not use "soup"
+ *      (e.g. "Edikang Ikong", "Seafood Okro", "Banga").
+ *
+ * The check is applied against raw or lightly normalised text — the word
+ * "soup" is NOT a stopword in normalize() so it survives the normalize() pass.
+ *
+ * Used by resolveOrders and the manual-order API to decide whether to apply
+ * the soup default protein ("Beef") when no protein is otherwise specified.
+ */
+export function isSoupMeal(text: string): boolean {
+  if (/\bsoup\b/i.test(text)) return true;
+  return SOUP_LIKE_MEAL_PATTERNS.some((re) => re.test(text));
+}
+
 // ── Garri / Gari → Eba canonicalization ──────────────────────────────────────
 
 /** Lowercase raw swallow name → canonical name (Business Rule §6). */
 const SWALLOW_ALIAS_MAP: Readonly<Record<string, string>> = {
-  garri: "Eba",
-  gari:  "Eba",
+  garri:        "Eba",
+  gari:         "Eba",
+  "pounded yam": "Poundo",
 };
 
 /**
- * Map Garri / Gari spelling variants to the canonical swallow name "Eba".
+ * Map swallow spelling variants to canonical names (Business Rule §6).
+ * Handles: Garri / Gari → "Eba", "Pounded Yam" → "Poundo".
  * All other values are returned unchanged.  Comparison is case-insensitive.
  */
 export function normalizeSwallowAlias(name: string): string {
   return SWALLOW_ALIAS_MAP[name.toLowerCase().trim()] ?? name;
+}
+
+/**
+ * Apply the swallow alias map to a lower-cased token.  Returns the lower-cased
+ * canonical name if an alias matches, otherwise returns the original token.
+ * Tries exact match first, then a starts-with match for annotated tokens.
+ */
+export function resolveSwallowAlias(lower: string): string {
+  const trimmed = lower.trim();
+  if (SWALLOW_ALIAS_MAP[trimmed]) return SWALLOW_ALIAS_MAP[trimmed].toLowerCase();
+  for (const [key, canonical] of Object.entries(SWALLOW_ALIAS_MAP)) {
+    if (trimmed.startsWith(key + " ")) return canonical.toLowerCase();
+  }
+  return trimmed;
 }
 
 // ── Main parsing ──────────────────────────────────────────────────────────────
@@ -302,14 +358,20 @@ const PROTEIN_ALIAS_MAP: Readonly<Record<string, string>> = {
   "assorted":           "Assorted Meat",
   "assorted meat":      "Assorted Meat",
   "assorted meats":     "Assorted Meat",
-  "goat":               "Goat Meat",
+  // Goat variants → canonical "Goatmeat"
+  "goat":               "Goatmeat",
+  "goat meat":          "Goatmeat",
   // Renamed / equivalent forms
   "cow meat":           "Beef",
   "cowmeat":            "Beef",
   "cow":                "Beef",
+  // "Meat" alone → "Beef"
+  "meat":               "Beef",
   // Cowleg space-variant normalisation
   "cow leg":            "Cowleg",
   "cow-leg":            "Cowleg",
+  // Misspelling normalisation
+  "chiken":             "Chicken",
   // Ponmo alternate spellings
   "pomo":               "Ponmo",
   "pmomo":              "Ponmo",
@@ -458,8 +520,12 @@ export function classifyAddOns(
         continue;
       }
 
-      // Exact match against the day's swallow vocabulary (incl. Garri / Gari).
-      const exactSwallow = swallowMap.get(lower);
+      // Alias-resolve before vocab lookup ("pounded yam" → "poundo", "garri" → "eba").
+      const aliasedSwallowLower = resolveSwallowAlias(lower);
+
+      // Exact match against the day's swallow vocabulary (incl. aliases).
+      const exactSwallow =
+        swallowMap.get(aliasedSwallowLower) ?? swallowMap.get(lower);
       if (exactSwallow) {
         swallowName = exactSwallow;
         continue;
@@ -467,7 +533,12 @@ export function classifyAddOns(
       // Partial / starts-with (handles trailing annotations like "Eba (extra)").
       let swallowFound = false;
       for (const [key, val] of swallowMap) {
-        if (lower.startsWith(key + " ") || lower === key) {
+        if (
+          aliasedSwallowLower.startsWith(key + " ") ||
+          aliasedSwallowLower === key ||
+          lower.startsWith(key + " ") ||
+          lower === key
+        ) {
           swallowName = val;
           swallowFound = true;
           break;
@@ -528,13 +599,13 @@ export function classifyAddOns(
 // almost universally correct across all customers.
 
 export const KNOWN_PROTEIN_NAMES: readonly string[] = [
-  "Chicken", "Beef", "Fish", "Turkey", "Goat Meat", "Assorted Meat",
+  "Chicken", "Beef", "Fish", "Turkey", "Goatmeat", "Assorted Meat",
   "Ponmo", "Egg", "Cowleg", "Titus", "Croaker", "Hake", "Gizzard",
   "Snail", "Prawn", "Shrimp", "Sausage", "Liver", "Kidney",
 ];
 
 export const KNOWN_SWALLOW_NAMES: readonly string[] = [
-  "Eba", "Semo", "Semovita", "Poundo", "Pounded Yam", "Wheat", "Amala", "Fufu",
+  "Eba", "Semo", "Semovita", "Poundo", "Wheat", "Amala", "Fufu",
 ];
 
 export const KNOWN_SIDE_NAMES: readonly string[] = [
@@ -610,4 +681,86 @@ export function classifyForDisplay(rawText: string): ClassifiedDisplay {
     unknownAddOns,
     hasSeparator,
   };
+}
+
+// ── Shared food-component helpers ─────────────────────────────────────────────
+
+/**
+ * Separator pattern for standalone food-component fields (protein columns,
+ * swallow columns, remarks cells) that may use comma, plus, or slash as
+ * a multi-value separator.
+ *
+ * Intentionally distinct from PRIMARY_SEP_RE / ADDON_SEP_RE which also handle
+ * natural-language separators ("with", "and") for full order-text strings.
+ */
+const FOOD_COMPONENT_SEP_RE = /\s*[,+/]\s*/g;
+
+/**
+ * Normalize a single food component string: trim whitespace and apply all
+ * protein and swallow alias mappings so variant spellings ("Goat meat",
+ * "Chiken", "Pounded Yam", "Meat") become their canonical forms.
+ *
+ * Canonical casing is preserved from the alias map; unrecognised values are
+ * returned with their original casing (trimmed).
+ */
+export function normalizeFoodComponent(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  const lower = trimmed.toLowerCase();
+
+  // Protein alias check
+  if (PROTEIN_ALIAS_MAP[lower]) return PROTEIN_ALIAS_MAP[lower];
+  for (const [key, canonical] of Object.entries(PROTEIN_ALIAS_MAP)) {
+    if (lower.startsWith(key + " ")) {
+      // preserve any trailing annotation (e.g. "Chicken (extra)")
+      return canonical + trimmed.slice(key.length);
+    }
+  }
+
+  // Swallow alias check
+  if (SWALLOW_ALIAS_MAP[lower]) return SWALLOW_ALIAS_MAP[lower];
+  for (const [key, canonical] of Object.entries(SWALLOW_ALIAS_MAP)) {
+    if (lower.startsWith(key + " ")) {
+      return canonical + trimmed.slice(key.length);
+    }
+  }
+
+  return trimmed;
+}
+
+/**
+ * Split a food-component cell value on `,`, `+`, or `/` separators, trim
+ * each part, and remove empty strings.  Does not apply alias normalisation —
+ * call `normalizeOrderComponents` if you also need name standardisation.
+ *
+ * Examples:
+ *   "Semo, Beef"          → ["Semo", "Beef"]
+ *   "Semo + Beef"         → ["Semo", "Beef"]
+ *   "Semo/Beef"           → ["Semo", "Beef"]
+ *   "Chicken"             → ["Chicken"]
+ */
+export function splitFoodComponents(value: string): string[] {
+  FOOD_COMPONENT_SEP_RE.lastIndex = 0;
+  return value
+    .split(FOOD_COMPONENT_SEP_RE)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Split a raw food-component value (string or pre-split array) on `,`, `+`,
+ * or `/` separators, then normalise each component via `normalizeFoodComponent`.
+ *
+ * This is the primary entry point for parsers that process protein/swallow
+ * column cells or remarks fields that may contain multi-value strings.
+ *
+ * Examples:
+ *   "Pounded Yam / Chiken"  → ["Poundo", "Chicken"]
+ *   "Rice, Goat meat"       → ["Rice", "Goatmeat"]
+ *   "Soup + Cow leg"        → ["Soup", "Cowleg"]
+ *   ["Meat", "Semo"]        → ["Beef", "Semo"]
+ */
+export function normalizeOrderComponents(value: string | string[]): string[] {
+  const raw = Array.isArray(value) ? value : splitFoodComponents(value);
+  return raw.flatMap((part) => splitFoodComponents(part)).map(normalizeFoodComponent).filter(Boolean);
 }

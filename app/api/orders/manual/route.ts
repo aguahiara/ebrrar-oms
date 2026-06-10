@@ -1,24 +1,10 @@
 import { getAppSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { isCalendarDate } from "@/lib/calendar-date";
-import { persistManualOrders } from "@/lib/avon-orders";
-import type { ManualOrderLine, ManualOrderSource } from "@/lib/avon-orders";
+import { applyManualOrderDefaults, persistManualOrders } from "@/lib/avon-orders";
+import type { ManualOrderLineInput, ManualOrderSource } from "@/lib/avon-orders";
 import { supabase } from "@/lib/supabase";
 import { NextResponse } from "next/server";
-
-// ── Request body types ────────────────────────────────────────────────────────
-
-type ManualOrderLineInput = {
-  menuItemId: string | null;
-  mealNameRaw: string;
-  matchType: "Direct" | "FruitsOnly";
-  proteinName?: string | null;
-  swallowName?: string | null;
-  sideName?: string | null;
-  quantity: number;
-  notes?: string | null;
-  orderSource: ManualOrderSource;
-};
 
 type SaveManualOrdersBody = {
   customerId: string;
@@ -71,9 +57,17 @@ function validateLines(lines: ManualOrderLineInput[]): string | null {
  */
 export async function POST(request: Request) {
   const session = await getAppSession();
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!session) {
+    return NextResponse.json(
+      { error: "Your session has expired. Please sign in again." },
+      { status: 401 },
+    );
+  }
   if (!hasPermission(session.selectedRole.role, "manage_orders")) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    return NextResponse.json(
+      { error: "You do not have permission to create manual orders." },
+      { status: 403 },
+    );
   }
 
   let body: SaveManualOrdersBody;
@@ -146,20 +140,33 @@ export async function POST(request: Request) {
     );
   }
 
+  // ── Fetch menu-item metadata for all Direct lines ────────────────────────
+  // We need protein_requirement (for validation + sentinel) and canonical_name
+  // (for soup-default-protein detection).  Fetch once, keyed by menu_item.id.
+  const allDirectMenuIds = [
+    ...new Set(lines.filter((l) => l.matchType === "Direct" && l.menuItemId).map((l) => l.menuItemId!)),
+  ];
+
+  const proteinReqById  = new Map<string, string>();
+  const canonicalById   = new Map<string, string>();
+
+  if (allDirectMenuIds.length > 0) {
+    const { data: menuItemsData } = await supabase
+      .from("menu_item")
+      .select("id, protein_requirement, canonical_name")
+      .in("id", allDirectMenuIds);
+
+    for (const mi of menuItemsData ?? []) {
+      proteinReqById.set(mi.id as string, (mi.protein_requirement as string) ?? "required");
+      canonicalById.set(mi.id as string, (mi.canonical_name as string) ?? "");
+    }
+  }
+
+  // ── Apply PI2 soup-default + PI3 optional-protein (shared helper) ──────────
+  const mappedLines = applyManualOrderDefaults(lines, proteinReqById, canonicalById);
+
   // ── Persist ───────────────────────────────────────────────────────────────
   try {
-    const mappedLines: ManualOrderLine[] = lines.map((l) => ({
-      menuItemId: l.menuItemId ?? null,
-      mealNameRaw: l.mealNameRaw.trim(),
-      matchType: l.matchType,
-      proteinName: l.proteinName ?? null,
-      swallowName: l.swallowName ?? null,
-      sideName: l.sideName ?? null,
-      quantity: l.quantity,
-      notes: l.notes ?? null,
-      orderSource: l.orderSource,
-    }));
-
     const result = await persistManualOrders({
       customerId,
       serviceDay,

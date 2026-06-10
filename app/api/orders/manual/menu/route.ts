@@ -77,11 +77,37 @@ export async function GET(request: Request) {
 
   const serviceWeekStart = mondayOfWeek(serviceDay);
 
-  const [menuItems, proteins, swallows] = await Promise.all([
+  const [menuItems, proteins, swallows, extrasRes, specialsRes] = await Promise.all([
     fetchMenuItems(customer.display_name, serviceWeekStart),
     fetchProteins(customer.display_name, serviceWeekStart),
     fetchSwallows(customer.display_name, serviceWeekStart),
+    // Count existing EXTRA-n for this customer + service day so the preview can
+    // show the correct starting sequence number.
+    supabase
+      .from("order_line")
+      .select("employee_ref")
+      .eq("customer_id", customer.id)
+      .eq("service_day", serviceDay)
+      .like("employee_ref", "EXTRA-%"),
+    supabase
+      .from("order_line")
+      .select("employee_ref")
+      .eq("customer_id", customer.id)
+      .eq("service_day", serviceDay)
+      .like("employee_ref", "SPECIAL-%"),
   ]);
+
+  let maxExtraNum = 0;
+  for (const r of extrasRes.data ?? []) {
+    const m = /^EXTRA-(\d+)$/i.exec(r.employee_ref ?? "");
+    if (m) maxExtraNum = Math.max(maxExtraNum, parseInt(m[1], 10));
+  }
+
+  let maxSpecialNum = 0;
+  for (const r of specialsRes.data ?? []) {
+    const m = /^SPECIAL-(\d+)$/i.exec(r.employee_ref ?? "");
+    if (m) maxSpecialNum = Math.max(maxSpecialNum, parseInt(m[1], 10));
+  }
 
   return NextResponse.json({
     customerId: customer.id,
@@ -103,5 +129,9 @@ export async function GET(request: Request) {
     swallows: swallows
       .filter((s) => s.day_of_week === dayOfWeek)
       .map((s) => s.name),
+    /** Next EXTRA-n sequence number for this customer + service day (preview hint). */
+    nextExtraNumber: maxExtraNum + 1,
+    /** Next SPECIAL-n sequence number for this customer + service day (preview hint). */
+    nextSpecialNumber: maxSpecialNum + 1,
   });
 }

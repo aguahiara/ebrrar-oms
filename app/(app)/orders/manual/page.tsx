@@ -124,8 +124,13 @@ async function fetchRecentManualBatches(): Promise<
   });
 }
 
-export default async function ManualOrdersPage() {
-  const session = await requirePermission("manage_orders");
+type ManualOrdersPageProps = {
+  searchParams: Promise<{ editBatchId?: string }>;
+};
+
+export default async function ManualOrdersPage({ searchParams }: ManualOrdersPageProps) {
+  const params = await searchParams;
+  await requirePermission("manage_orders");
 
   const [corporateCustomers, specialOrdersCustomer, recentBatches] =
     await Promise.all([
@@ -151,6 +156,7 @@ export default async function ManualOrdersPage() {
         specialOrdersCustomer={specialOrdersCustomer}
         canEdit={true}
         recentBatches={recentBatches}
+        initialEditBatchId={params.editBatchId ?? null}
       />
     </div>
   );
