@@ -1,45 +1,42 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import type { RoleAssignment } from "@/lib/auth-types";
 import { ROLE_LABELS, ROLE_DESCRIPTIONS, ROLE_LANDING } from "@/lib/permissions";
 
 interface Props {
+  // Only roles already confirmed by the server as assigned to this user.
+  // The server page redirects immediately for single-role users, so this
+  // component is only rendered when roles.length >= 2.
   roles: RoleAssignment[];
 }
 
 export default function SelectRoleClient({ roles }: Props) {
   const router = useRouter();
   const [selecting, setSelecting] = useState<string | null>(null);
-
-  // Auto-select when there's only one role
-  useEffect(() => {
-    if (roles.length === 1) {
-      void handleSelect(roles[0]);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleSelect(role: RoleAssignment) {
     setSelecting(role.id);
-    await fetch("/api/auth/select-role", {
+    setError(null);
+
+    const res = await fetch("/api/auth/select-role", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        role: role.role,
-        customer_id: role.customer_id ?? null,
-      }),
+      // Send the assignment id so the server can verify ownership without
+      // trusting the role string from the client at all.
+      body: JSON.stringify({ assignment_id: role.id }),
     });
-    router.push(ROLE_LANDING[role.role]);
-  }
 
-  if (roles.length === 1) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-zinc-50 dark:bg-zinc-950">
-        <p className="text-sm text-zinc-500">Redirecting…</p>
-      </div>
-    );
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError((body as { error?: string }).error ?? "Could not select role. Please try again.");
+      setSelecting(null);
+      return;
+    }
+
+    router.push(ROLE_LANDING[role.role]);
   }
 
   return (
@@ -57,6 +54,12 @@ export default function SelectRoleClient({ roles }: Props) {
             Choose the role you want to work in for this session.
           </p>
         </div>
+
+        {error && (
+          <div className="mb-4 px-4 py-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm dark:bg-red-950/40 dark:border-red-800 dark:text-red-400">
+            {error}
+          </div>
+        )}
 
         <div className="space-y-3">
           {roles.map((r) => (
