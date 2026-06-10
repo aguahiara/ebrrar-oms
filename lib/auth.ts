@@ -333,9 +333,14 @@ export async function adminCreateInvitation(input: CreateInvitationInput) {
   // Attempt to send Supabase invite email
   let emailSent = false;
   try {
+    const siteUrl =
+      process.env.NEXT_PUBLIC_SITE_URL ??
+      process.env.NEXTAUTH_URL ??
+      "http://localhost:3000";
     const { error: authErr } = await service.auth.admin.inviteUserByEmail(
       input.email,
       {
+        redirectTo: `${siteUrl}/auth/callback?next=/auth/set-password`,
         data: {
           full_name: input.full_name ?? "",
           invited_role: input.role,
