@@ -14,9 +14,15 @@ export default function SetPasswordPage() {
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    // onAuthStateChange fires once the SDK has fully settled — more reliable
+    // than a one-shot getSession() call, which can return null if the session
+    // cookie hasn't been read yet at the time the effect runs.
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
       setPageState(session ? "form" : "invalid");
     });
+    return () => subscription.unsubscribe();
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {

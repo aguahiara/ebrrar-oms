@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
 /**
- * Handles the Supabase auth callback (magic link / OAuth).
+ * Handles the Supabase auth callback (magic link / OAuth / invite).
  *
  * After exchanging the code for a session we call two SECURITY DEFINER RPCs:
  *
@@ -13,11 +13,17 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
  * Both RPCs are SECURITY DEFINER (run as the postgres superuser) so they bypass
  * RLS even when SUPABASE_SERVICE_ROLE_KEY is misconfigured.  They are no-ops if
  * the profile / role already exist.
+ *
+ * Destination priority after a successful exchange:
+ *   1. Explicit ?next= param (set by adminCreateInvitation's redirectTo).
+ *   2. Invite fallback: if no ?next= but session.user.app_metadata.invited_at
+ *      is set, send to /auth/set-password (user must set a password first).
+ *   3. Default: /select-role for all other auth flows.
  */
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
   const code = searchParams.get("code");
-  const next = searchParams.get("next") ?? "/select-role";
+  const explicitNext = searchParams.get("next");
 
   if (code) {
     const supabase = await createSupabaseServerClient();
@@ -33,6 +39,20 @@ export async function GET(request: NextRequest) {
         await supabase.rpc("accept_invitation_for_current_user");
       } catch {
         // Ignore — profile likely already exists or is handled elsewhere
+      }
+
+      // Resolve the post-callback destination.
+      let next = explicitNext;
+      if (!next) {
+        // No explicit ?next= — check whether this is an invite session.
+        // Supabase sets invited_at in app_metadata when inviteUserByEmail() is
+        // used.  If present, the user has not yet set a password and must be
+        // sent to the set-password page rather than directly into the app.
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        const isInvite = !!session?.user?.app_metadata?.invited_at;
+        next = isInvite ? "/auth/set-password" : "/select-role";
       }
 
       return NextResponse.redirect(`${origin}${next}`);
