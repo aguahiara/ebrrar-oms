@@ -221,17 +221,12 @@ WHERE NOT EXISTS (
 ON CONFLICT (auth_user_id) DO NOTHING;
 
 
--- ─── 5. Bootstrap: assign ebrrar_super_admin to the first profileless user ───
--- Targets only the oldest auth user that has a profile but no role assignments.
--- On a fresh install this seeds the bootstrapping super admin.
--- On an established installation (roles already exist) this is a no-op.
-
-INSERT INTO public.role_assignments (user_profile_id, role, is_default, active)
-SELECT p.id, 'ebrrar_super_admin', TRUE, TRUE
-FROM   public.user_profiles p
-JOIN   auth.users           u ON u.id = p.auth_user_id
-WHERE  NOT EXISTS (
-  SELECT 1 FROM public.role_assignments r WHERE r.user_profile_id = p.id
-)
-ORDER BY u.created_at ASC
-LIMIT 1;
+-- ─── 5. Bootstrap ────────────────────────────────────────────────────────────
+-- Intentionally omitted from this migration.
+--
+-- The Production Super Admin is assigned via the controlled one-time script
+-- sql/bootstrap_super_admin.sql, which requires an explicit target email and
+-- validates all preconditions before writing anything.
+--
+-- Running this migration on an empty auth.users table is safe and makes no
+-- role decisions.
