@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase-client";
 
 export default function LoginPage() {
@@ -10,6 +10,40 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [magicSent, setMagicSent] = useState(false);
+
+  // ── Hash-based token handler (Supabase implicit flow) ──────────────────────
+  // When Supabase sends a recovery or invite email using the Site URL as the
+  // redirect_to (Dashboard-generated emails, or any email without a custom
+  // redirectTo), it appends #access_token=...&type=recovery to the URL after
+  // verification. Server-side code never sees the hash — only the browser does.
+  //
+  // We capture the token type from the raw hash before the Supabase SDK clears
+  // it, then listen for the resulting auth event and forward the user to the
+  // set-password page rather than leaving them stranded on the login form.
+  useEffect(() => {
+    const rawHash = window.location.hash;
+    if (!rawHash.includes("access_token")) return; // no hash token — nothing to do
+
+    const hashType = new URLSearchParams(rawHash.slice(1)).get("type");
+    const supabase = createSupabaseBrowserClient();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY") {
+        // Recovery email (Dashboard or app) → send to set-password
+        window.location.replace("/auth/set-password");
+        return;
+      }
+      if (event === "SIGNED_IN" && session && hashType === "invite") {
+        // Dashboard-generated invite email (hash flow) → send to set-password
+        window.location.replace("/auth/set-password");
+        return;
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

@@ -22,7 +22,10 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
  */
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url);
-  const code = searchParams.get("code");
+  const code        = searchParams.get("code");
+  const tokenHash   = searchParams.get("token_hash");
+  const tokenType   = searchParams.get("type") as
+    | "recovery" | "invite" | "email" | "signup" | null;
   const explicitNext = searchParams.get("next");
 
   if (code) {
@@ -54,6 +57,37 @@ export async function GET(request: NextRequest) {
         const isInvite = !!session?.user?.app_metadata?.invited_at;
         next = isInvite ? "/auth/set-password" : "/select-role";
       }
+
+      return NextResponse.redirect(`${origin}${next}`);
+    }
+  }
+
+  // ── token_hash flow (updated Supabase email templates) ───────────────────
+  // When the Recovery or Invite email template is updated to use:
+  //   /auth/callback?token_hash={{ .TokenHash }}&type=recovery&next=/auth/set-password
+  // Supabase sends a server-side-verifiable token instead of a hash fragment,
+  // which is more reliable than the implicit flow and works with SSR.
+  if (tokenHash && tokenType) {
+    const supabase = await createSupabaseServerClient();
+    const { error } = await supabase.auth.verifyOtp({
+      token_hash: tokenHash,
+      type: tokenType,
+    });
+
+    if (!error) {
+      try {
+        await supabase.rpc("ensure_user_profile");
+        await supabase.rpc("accept_invitation_for_current_user");
+      } catch {
+        // Non-fatal — profile / role may already exist
+      }
+
+      // Recovery and invite tokens always go to set-password unless overridden.
+      const next =
+        explicitNext ??
+        (tokenType === "recovery" || tokenType === "invite"
+          ? "/auth/set-password"
+          : "/select-role");
 
       return NextResponse.redirect(`${origin}${next}`);
     }
