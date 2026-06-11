@@ -14,6 +14,36 @@ export default function SetPasswordPage() {
 
   useEffect(() => {
     const supabase = createSupabaseBrowserClient();
+
+    // ── Hash-based token fallback ──────────────────────────────────────────
+    // The normal path is: /login detects the hash, calls setSession(), then
+    // redirects here with a cookie-backed session already established.
+    //
+    // Belt-and-suspenders: if Supabase ever directs a recovery/invite link
+    // straight to /auth/set-password (e.g. a future config change), we handle
+    // the hash here too so the page always works regardless of landing path.
+    const rawHash = window.location.hash;
+    if (rawHash.includes("access_token")) {
+      const params      = new URLSearchParams(rawHash.slice(1));
+      const accessToken  = params.get("access_token");
+      const refreshToken = params.get("refresh_token");
+
+      if (accessToken && refreshToken) {
+        window.history.replaceState(
+          null,
+          "",
+          window.location.pathname + window.location.search,
+        );
+        supabase.auth
+          .setSession({ access_token: accessToken, refresh_token: refreshToken })
+          .then(({ error }) => {
+            setPageState(error ? "invalid" : "form");
+          });
+        return; // onAuthStateChange below will fire once setSession resolves
+      }
+    }
+
+    // ── Cookie-backed session (normal path) ───────────────────────────────
     // onAuthStateChange fires once the SDK has fully settled — more reliable
     // than a one-shot getSession() call, which can return null if the session
     // cookie hasn't been read yet at the time the effect runs.

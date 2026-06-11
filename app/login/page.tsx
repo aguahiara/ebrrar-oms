@@ -10,39 +10,68 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [magicSent, setMagicSent] = useState(false);
+  // True while a Supabase hash token is being exchanged — hides the login form.
+  const [hashProcessing, setHashProcessing] = useState(false);
 
-  // ── Hash-based token handler (Supabase implicit flow) ──────────────────────
-  // When Supabase sends a recovery or invite email using the Site URL as the
-  // redirect_to (Dashboard-generated emails, or any email without a custom
-  // redirectTo), it appends #access_token=...&type=recovery to the URL after
-  // verification. Server-side code never sees the hash — only the browser does.
+  // ── Hash-based token handler ───────────────────────────────────────────────
+  // Default Supabase recovery and invite emails redirect to the Site URL with
+  // the session tokens in the URL hash fragment:
+  //   /login#access_token=...&refresh_token=...&type=recovery
   //
-  // We capture the token type from the raw hash before the Supabase SDK clears
-  // it, then listen for the resulting auth event and forward the user to the
-  // set-password page rather than leaving them stranded on the login form.
+  // @supabase/ssr's createBrowserClient does NOT automatically process URL
+  // hashes (it is a cookie-first, SSR-compatible client). We must read the
+  // hash parameters and call setSession() explicitly, then redirect the user
+  // to the appropriate page.
+  //
+  // Token type routing:
+  //   recovery → /auth/set-password   (password reset flow)
+  //   invite   → /auth/set-password   (new-user onboarding)
+  //   magiclink → /select-role        (sign-in, not a password setup)
+  //   missing / unknown → /auth/set-password (safe default for any auth link)
   useEffect(() => {
     const rawHash = window.location.hash;
-    if (!rawHash.includes("access_token")) return; // no hash token — nothing to do
+    if (!rawHash.includes("access_token")) return;
 
-    const hashType = new URLSearchParams(rawHash.slice(1)).get("type");
+    const params = new URLSearchParams(rawHash.slice(1));
+    const accessToken  = params.get("access_token");
+    const refreshToken = params.get("refresh_token");
+    const tokenType    = params.get("type"); // "recovery" | "invite" | "magiclink" | null
+
+    if (!accessToken || !refreshToken) return;
+
+    // Show a processing screen immediately — prevent the login form from
+    // flashing before the redirect fires.
+    setHashProcessing(true);
+
+    // Remove tokens from the address bar so they are not visible or bookmarked.
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + window.location.search,
+    );
+
     const supabase = createSupabaseBrowserClient();
+    supabase.auth
+      .setSession({ access_token: accessToken, refresh_token: refreshToken })
+      .then(({ error: sessionError }) => {
+        if (sessionError) {
+          // Token is expired or already used — show an error and let the user
+          // request a new link rather than silently staying on the login page.
+          setError(
+            "This link has expired or has already been used. Please request a new one.",
+          );
+          setHashProcessing(false);
+          return;
+        }
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === "PASSWORD_RECOVERY") {
-        // Recovery email (Dashboard or app) → send to set-password
-        window.location.replace("/auth/set-password");
-        return;
-      }
-      if (event === "SIGNED_IN" && session && hashType === "invite") {
-        // Dashboard-generated invite email (hash flow) → send to set-password
-        window.location.replace("/auth/set-password");
-        return;
-      }
-    });
-
-    return () => subscription.unsubscribe();
+        // Route based on token type.
+        if (tokenType === "magiclink") {
+          window.location.replace("/select-role");
+        } else {
+          // recovery, invite, or any unrecognised type → set-password.
+          window.location.replace("/auth/set-password");
+        }
+      });
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -95,7 +124,22 @@ export default function LoginPage() {
         </div>
 
         <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow-sm border border-zinc-200 dark:border-zinc-800 p-8">
-          {magicSent ? (
+          {/* Processing state — shown while a hash token is being exchanged */}
+          {hashProcessing ? (
+            <div className="text-center py-4">
+              <p className="text-sm text-zinc-500">Processing your link…</p>
+              {error && (
+                <div className="mt-4 px-4 py-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm dark:bg-red-950/40 dark:border-red-800 dark:text-red-400">
+                  {error}
+                  <div className="mt-3">
+                    <a href="/login" className="text-emerald-600 hover:underline text-sm">
+                      Back to sign in
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : magicSent ? (
             <div className="text-center py-4">
               <div className="text-5xl mb-4">✉️</div>
               <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50 mb-2">
