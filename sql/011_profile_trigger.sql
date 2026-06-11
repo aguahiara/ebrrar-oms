@@ -222,11 +222,12 @@ ON CONFLICT (auth_user_id) DO NOTHING;
 
 
 -- ─── 5. Bootstrap ────────────────────────────────────────────────────────────
--- Intentionally omitted from this migration.
+-- No automatic role assignment is performed here.
 --
--- The Production Super Admin is assigned via the controlled one-time script
--- sql/bootstrap_super_admin.sql, which requires an explicit target email and
--- validates all preconditions before writing anything.
+-- ebrrar_super_admin is NOT assigned by this migration under any circumstances.
+-- Running this migration on an empty auth.users table is fully safe and makes
+-- no role decisions whatsoever.
 --
--- Running this migration on an empty auth.users table is safe and makes no
--- role decisions.
+-- To assign the first Production Super Admin, use the controlled one-time
+-- script at sql/bootstrap/bootstrap_super_admin.sql after all migrations have
+-- been applied and the intended account exists in auth.users.
