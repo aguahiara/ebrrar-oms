@@ -28,6 +28,11 @@ export async function GET(request: NextRequest) {
     | "recovery" | "invite" | "email" | "signup" | null;
   const explicitNext = searchParams.get("next");
 
+  // Track whether a code/tokenHash was present but the exchange failed.
+  // Distinguishes a genuine auth error from the implicit-flow case where
+  // neither param is present (session is in the URL fragment instead).
+  let authFailed = false;
+
   if (code) {
     const supabase = await createSupabaseServerClient();
     const { error } = await supabase.auth.exchangeCodeForSession(code);
@@ -60,6 +65,8 @@ export async function GET(request: NextRequest) {
 
       return NextResponse.redirect(`${origin}${next}`);
     }
+
+    authFailed = true;
   }
 
   // ── token_hash flow (updated Supabase email templates) ───────────────────
@@ -91,8 +98,19 @@ export async function GET(request: NextRequest) {
 
       return NextResponse.redirect(`${origin}${next}`);
     }
+
+    authFailed = true;
   }
 
-  // Something went wrong — send back to login with error flag
-  return NextResponse.redirect(`${origin}/login?error=auth_callback_failed`);
+  if (authFailed) {
+    // A code or token_hash was present but the exchange/verify failed
+    // (expired link, already used, etc.).
+    return NextResponse.redirect(`${origin}/login?error=auth_callback_failed`);
+  }
+
+  // No code and no token_hash — Supabase used the implicit flow and put the
+  // session tokens in the URL fragment (#access_token=...).  The server cannot
+  // read the fragment; browsers preserve it through HTTP redirects.  Forward
+  // to /login where the client-side hash handler will call setSession().
+  return NextResponse.redirect(`${origin}/login`);
 }
