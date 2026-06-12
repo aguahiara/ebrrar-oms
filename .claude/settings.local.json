@@ -6,7 +6,20 @@
       "Bash(Format-Table -AutoSize)",
       "Bash(grep -E \"\\\\.ts$\")",
       "Bash(Select-Object Name, FullName)",
-      "PowerShell(\\(Get-Content \"C:\\\\Projects\\\\ebrrar-oms\\\\node_modules\\\\next\\\\package.json\" | ConvertFrom-Json\\).version)"
+      "PowerShell(\\(Get-Content \"C:\\\\Projects\\\\ebrrar-oms\\\\node_modules\\\\next\\\\package.json\" | ConvertFrom-Json\\).version)",
+      "Bash(git -C \"C:\\\\Projects\\\\ebrrar-oms\" diff --name-only)",
+      "Bash(git -C \"C:\\\\Projects\\\\ebrrar-oms\" ls-files --others --exclude-standard)",
+      "Bash(xargs grep -l \"upload\\\\|Upload\")",
+      "Bash(grep -r \"splitFood\\\\|normalizFood\\\\|parseAddOn\\\\|extractProtein\" /c/Projects/ebrrar-oms --include=\"*.ts\" --include=\"*.tsx\" ! -path \"*/node_modules/*\")",
+      "Bash(grep -r \"parseOrder\\\\|decompose\\\\|matchMeal\\\\|classify\" /c/Projects/ebrrar-oms/app --include=\"*.ts\" --include=\"*.tsx\" ! -path \"*/node_modules/*\")",
+      "Bash(grep -r \"classifyForDisplay\\\\|classifyAddOns\\\\|parseOrderText\" /c/Projects/ebrrar-oms --include=\"*.ts\" --include=\"*.tsx\" ! -path \"*/node_modules/*\")",
+      "Bash(npx vitest *)",
+      "Bash(npx tsc *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Projects\\\\ebrrar-oms\\\\app\\\\api\" -Recurse -Filter \"*auth*\" -File)",
+      "Bash(git mv *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }

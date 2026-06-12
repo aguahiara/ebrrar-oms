@@ -128,12 +128,25 @@ export async function requireAuth(): Promise<NonNullable<Awaited<ReturnType<type
   return user;
 }
 
-/** Requires an active profile; redirects appropriately if missing. */
+/** Requires an active profile; redirects appropriately if missing or blocked. */
 export async function requireProfile(): Promise<UserProfile> {
-  await requireAuth();
+  const user = await requireAuth();
   const profile = await getCurrentUserProfile();
-  if (!profile) redirect("/auth/profile-not-configured");
-  return profile;
+  if (profile) return profile;
+
+  // No active profile — check whether the user is suspended/deactivated
+  // rather than simply having no profile yet.
+  const supabase = await createSupabaseServerClient();
+  const { data: any } = await supabase
+    .from("user_profiles")
+    .select("status")
+    .eq("auth_user_id", user.id)
+    .maybeSingle();
+
+  if (any?.status === "suspended" || any?.status === "inactive") {
+    redirect("/auth/suspended");
+  }
+  redirect("/auth/profile-not-configured");
 }
 
 /**
@@ -375,4 +388,319 @@ export async function adminListInvitations() {
           : undefined,
     };
   });
+}
+
+// ─── Admin: safety guards ─────────────────────────────────────────────────────
+
+/**
+ * Returns the number of users with an active ebrrar_super_admin role
+ * AND active profile status.  Used to enforce the "last SA" rule before
+ * suspend, deactivate, or role-deactivate operations.
+ */
+export async function adminCountActiveSuperAdmins(): Promise<number> {
+  const service = createSupabaseServiceClient();
+  const { data, error } = await service.rpc("count_active_super_admins");
+  if (error) throw new Error(`SA count failed: ${error.message}`);
+  return Number(data ?? 0);
+}
+
+/**
+ * Returns the user_profile.id of the Super Admin with the given auth_user_id,
+ * or null if that user is not an active Super Admin.  Used to verify that
+ * the acting admin is a Super Admin even by a different lookup path.
+ */
+export async function adminGetProfileIdForAuthUser(
+  authUserId: string,
+): Promise<string | null> {
+  const service = createSupabaseServiceClient();
+  const { data } = await service
+    .from("user_profiles")
+    .select("id")
+    .eq("auth_user_id", authUserId)
+    .maybeSingle();
+  return data?.id ?? null;
+}
+
+// ─── Admin: user status management ───────────────────────────────────────────
+
+export async function adminSuspendUser(
+  profileId: string,
+  actorUserId: string,
+  actorRole: string,
+): Promise<void> {
+  const service = createSupabaseServiceClient();
+  const { data: profile, error: fetchErr } = await service
+    .from("user_profiles")
+    .select("status")
+    .eq("id", profileId)
+    .single();
+  if (fetchErr || !profile) throw new Error("User profile not found.");
+  if (profile.status === "suspended") return; // idempotent
+
+  const { error } = await service
+    .from("user_profiles")
+    .update({ status: "suspended", updated_at: new Date().toISOString() })
+    .eq("id", profileId);
+  if (error) throw new Error(`Failed to suspend user: ${error.message}`);
+
+  await logAuditEvent({
+    event_type: "user_suspended",
+    actor_user_id: actorUserId,
+    actor_role: actorRole,
+    target_type: "user_profile",
+    target_id: profileId,
+    before: { status: profile.status },
+    after: { status: "suspended" },
+  });
+}
+
+export async function adminReactivateUser(
+  profileId: string,
+  actorUserId: string,
+  actorRole: string,
+): Promise<void> {
+  const service = createSupabaseServiceClient();
+  const { data: profile, error: fetchErr } = await service
+    .from("user_profiles")
+    .select("status")
+    .eq("id", profileId)
+    .single();
+  if (fetchErr || !profile) throw new Error("User profile not found.");
+  if (profile.status === "active") return; // idempotent
+
+  const { error } = await service
+    .from("user_profiles")
+    .update({ status: "active", updated_at: new Date().toISOString() })
+    .eq("id", profileId);
+  if (error) throw new Error(`Failed to reactivate user: ${error.message}`);
+
+  await logAuditEvent({
+    event_type: "user_reactivated",
+    actor_user_id: actorUserId,
+    actor_role: actorRole,
+    target_type: "user_profile",
+    target_id: profileId,
+    before: { status: profile.status },
+    after: { status: "active" },
+  });
+}
+
+export async function adminDeactivateUser(
+  profileId: string,
+  actorUserId: string,
+  actorRole: string,
+): Promise<void> {
+  const service = createSupabaseServiceClient();
+  const { data: profile, error: fetchErr } = await service
+    .from("user_profiles")
+    .select("status")
+    .eq("id", profileId)
+    .single();
+  if (fetchErr || !profile) throw new Error("User profile not found.");
+
+  // Deactivate all active role assignments for this user
+  await service
+    .from("role_assignments")
+    .update({ active: false, updated_at: new Date().toISOString() })
+    .eq("user_profile_id", profileId)
+    .eq("active", true);
+
+  const { error } = await service
+    .from("user_profiles")
+    .update({ status: "inactive", updated_at: new Date().toISOString() })
+    .eq("id", profileId);
+  if (error) throw new Error(`Failed to deactivate user: ${error.message}`);
+
+  await logAuditEvent({
+    event_type: "user_deactivated",
+    actor_user_id: actorUserId,
+    actor_role: actorRole,
+    target_type: "user_profile",
+    target_id: profileId,
+    before: { status: profile.status },
+    after: { status: "inactive" },
+  });
+}
+
+export async function adminSetDefaultRole(
+  profileId: string,
+  roleAssignmentId: string,
+  actorUserId: string,
+  actorRole: string,
+): Promise<void> {
+  const service = createSupabaseServiceClient();
+  // Clear existing default
+  await service
+    .from("role_assignments")
+    .update({ is_default: false, updated_at: new Date().toISOString() })
+    .eq("user_profile_id", profileId);
+  // Set new default
+  const { error } = await service
+    .from("role_assignments")
+    .update({ is_default: true, updated_at: new Date().toISOString() })
+    .eq("id", roleAssignmentId);
+  if (error) throw new Error(`Failed to set default role: ${error.message}`);
+
+  await logAuditEvent({
+    event_type: "default_role_changed",
+    actor_user_id: actorUserId,
+    actor_role: actorRole,
+    target_type: "user_profile",
+    target_id: profileId,
+    after: { role_assignment_id: roleAssignmentId },
+  });
+}
+
+// ─── Admin: password reset ────────────────────────────────────────────────────
+
+/**
+ * Triggers a Supabase recovery email to the user's registered address.
+ * Uses resetPasswordForEmail with the anon-level server client — Supabase
+ * sends to the registered address only; the link is never returned here.
+ */
+export async function adminResetUserPassword(email: string): Promise<void> {
+  const siteUrl =
+    process.env.NEXT_PUBLIC_SITE_URL ??
+    process.env.NEXTAUTH_URL ??
+    "http://localhost:3000";
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${siteUrl}/auth/callback?next=/auth/set-password`,
+  });
+  if (error) throw new Error(`Failed to send reset email: ${error.message}`);
+}
+
+// ─── Admin: invitation management ────────────────────────────────────────────
+
+export async function adminCancelInvitation(
+  invitationId: string,
+  cancelledBy: string,
+): Promise<void> {
+  const service = createSupabaseServiceClient();
+  const { error } = await service
+    .from("user_invitations")
+    .update({
+      status: "cancelled",
+      cancelled_by: cancelledBy,
+      cancelled_at: new Date().toISOString(),
+    })
+    .eq("id", invitationId)
+    .eq("status", "pending"); // only cancel pending invitations
+  if (error) throw new Error(`Failed to cancel invitation: ${error.message}`);
+}
+
+/**
+ * Resend flow:
+ *  1. Cancel the existing invitation record.
+ *  2. Create a new invitation record.
+ *  3. If the invited email already has an unconfirmed auth.users record
+ *     (created when the original invite was sent), delete it so a fresh
+ *     invite email can be issued.
+ *  4. Call inviteUserByEmail for a clean invite.
+ */
+export async function adminResendInvitation(
+  invitationId: string,
+  actorUserId: string,
+): Promise<{ invitation: Record<string, unknown>; emailSent: boolean }> {
+  const service = createSupabaseServiceClient();
+
+  // Load original invitation
+  const { data: original, error: fetchErr } = await service
+    .from("user_invitations")
+    .select("*")
+    .eq("id", invitationId)
+    .single();
+  if (fetchErr || !original) throw new Error("Invitation not found.");
+  if (original.status === "accepted")
+    throw new Error("Cannot resend an already-accepted invitation.");
+
+  // Cancel the old record
+  await service
+    .from("user_invitations")
+    .update({
+      status: "cancelled",
+      cancelled_by: actorUserId,
+      cancelled_at: new Date().toISOString(),
+    })
+    .eq("id", invitationId);
+
+  // If an unconfirmed auth user exists for this email, delete them so the
+  // new inviteUserByEmail call works cleanly.
+  const { data: authUser } = await service.auth.admin.listUsers();
+  const existing = authUser?.users?.find(
+    (u) => u.email?.toLowerCase() === original.email.toLowerCase(),
+  );
+  if (existing && !existing.email_confirmed_at) {
+    await service.auth.admin.deleteUser(existing.id);
+  }
+
+  // Create a fresh invitation record
+  const { data: newInv, error: invErr } = await service
+    .from("user_invitations")
+    .insert({
+      email: original.email,
+      full_name: original.full_name,
+      role: original.role,
+      customer_id: original.customer_id,
+      invited_by: actorUserId,
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+    })
+    .select()
+    .single();
+  if (invErr) throw new Error(`Failed to create new invitation: ${invErr.message}`);
+
+  // Send invite email
+  let emailSent = false;
+  try {
+    const siteUrl =
+      process.env.NEXT_PUBLIC_SITE_URL ??
+      process.env.NEXTAUTH_URL ??
+      "http://localhost:3000";
+    const { error: authErr } = await service.auth.admin.inviteUserByEmail(
+      original.email,
+      {
+        redirectTo: `${siteUrl}/auth/callback?next=/auth/set-password`,
+        data: {
+          full_name: original.full_name ?? "",
+          invited_role: original.role,
+          customer_id: original.customer_id ?? null,
+        },
+      },
+    );
+    emailSent = !authErr;
+  } catch {
+    // Non-fatal
+  }
+
+  return { invitation: newInv as Record<string, unknown>, emailSent };
+}
+
+// ─── Admin: audit log ─────────────────────────────────────────────────────────
+
+export async function adminListAuditEvents(opts?: {
+  targetId?: string;
+  actorUserId?: string;
+  eventType?: string;
+  page?: number;
+  pageSize?: number;
+}): Promise<{ events: Record<string, unknown>[]; total: number }> {
+  const service = createSupabaseServiceClient();
+  const page = opts?.page ?? 1;
+  const pageSize = Math.min(opts?.pageSize ?? 50, 100);
+  const from = (page - 1) * pageSize;
+  const to = from + pageSize - 1;
+
+  let query = service
+    .from("audit_events")
+    .select("*", { count: "exact" })
+    .order("created_at", { ascending: false })
+    .range(from, to);
+
+  if (opts?.targetId) query = query.eq("target_id", opts.targetId);
+  if (opts?.actorUserId) query = query.eq("actor_user_id", opts.actorUserId);
+  if (opts?.eventType) query = query.eq("event_type", opts.eventType);
+
+  const { data, error, count } = await query;
+  if (error) throw new Error(`Failed to list audit events: ${error.message}`);
+  return { events: (data ?? []) as Record<string, unknown>[], total: count ?? 0 };
 }

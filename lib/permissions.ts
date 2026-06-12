@@ -68,6 +68,7 @@ export const ROLE_NAV: Record<UserRole, NavItem[]> = {
     { label: "Reports", href: "/management/dashboard" },
     { label: "Users & Roles", href: "/admin/users" },
     { label: "Invitations", href: "/admin/invitations" },
+    { label: "Audit Log", href: "/admin/audit" },
   ],
 
   ebrrar_operations_admin: [
@@ -264,6 +265,7 @@ export const SHARED_AUTHENTICATED_ROUTES = [
   "/select-role",
   "/auth/",
   "/unauthorized",
+  "/auth/suspended",
 ];
 
 // Public routes (no auth required)

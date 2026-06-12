@@ -51,8 +51,11 @@ export type UserInvitation = {
   accepted_at: string | null;
   expires_at: string | null;
   status: "pending" | "accepted" | "expired" | "cancelled";
+  cancelled_by: string | null;
+  cancelled_at: string | null;
   // joined
   customer_name?: string;
+  invited_by_name?: string;
 };
 
 export type AuditEvent = {
